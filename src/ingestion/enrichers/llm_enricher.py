@@ -15,7 +15,7 @@ Return ONLY valid JSON with these fields:
 - tags: list of 3-8 relevant keyword tags (lowercase)
 - domain: one of [HR, Legal, Finance, Operations, Engineering, Sales, Marketing, General]
 - language: ISO 639-1 language code (e.g., "en")
-- entities: list of {name, type} where type is one of [person, organization, date, product, location]
+- entities: list of {{name, type}} where type is one of [person, organization, date, product, location]
 
 Document content (first 2000 chars):
 {content}

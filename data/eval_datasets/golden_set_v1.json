@@ -1,0 +1,27 @@
+[
+  {
+    "question": "What are the main causes of machine learning failures in production?",
+    "ground_truth": "Machine learning systems commonly fail in production due to data drift, training-serving skew, poor monitoring, lack of feedback loops, underestimation of infrastructure requirements, and inadequate testing on real-world edge cases.",
+    "notes": "Tests faithfulness and retrieval quality on technical ML content"
+  },
+  {
+    "question": "How can you detect and handle data drift in a deployed ML model?",
+    "ground_truth": "Data drift can be detected by monitoring the statistical distribution of incoming features against the training distribution using metrics like PSI, KS-test, or KL divergence. Handling strategies include automatic retraining pipelines, shadow deployments, and alerting systems.",
+    "notes": "Tests context recall on monitoring and MLOps topics"
+  },
+  {
+    "question": "What is the difference between online and offline evaluation for RAG systems?",
+    "ground_truth": "Offline evaluation uses pre-built golden datasets with known answers to measure faithfulness, relevancy, and correctness in a controlled setting. Online evaluation measures real-user metrics like click-through rate, session length, thumbs-up/down feedback, and latency in production.",
+    "notes": "Tests general RAG knowledge retrieval"
+  },
+  {
+    "question": "What strategies improve retrieval quality in a hybrid search system?",
+    "ground_truth": "Improving retrieval quality in hybrid search involves query rewriting, query expansion, fine-tuned embedding models, reciprocal rank fusion (RRF) to combine dense and sparse scores, cross-encoder reranking, and parent-child chunk strategies to balance precision and recall.",
+    "notes": "Tests retrieval pipeline knowledge"
+  },
+  {
+    "question": "Describe best practices for chunking documents for RAG applications.",
+    "ground_truth": "Best chunking practices include using semantic boundaries (sentences, paragraphs) rather than fixed token counts, parent-child chunking to preserve context while enabling fine-grained retrieval, appropriate overlap between chunks, and metadata enrichment to support filtered search.",
+    "notes": "Tests chunking strategy knowledge"
+  }
+]

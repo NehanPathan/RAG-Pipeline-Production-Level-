@@ -2,14 +2,22 @@ from __future__ import annotations
 
 import uuid
 from pathlib import Path
-from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
 from fastapi import status as http_status
 from pydantic import BaseModel
 
+from src.api.dependencies import (
+    DEFAULT_USER_ID,
+    get_chunk_repository,
+    get_document_repository,
+    get_ingestion_pipeline,
+    get_search_repository,
+    get_vector_repository,
+)
 from src.config import get_settings
-from src.domain.entities.document import Document, DocumentStatus
+from src.domain.entities.document import Document
+from src.ingestion.pipeline import IngestionPipeline
 from src.monitoring.logger import get_logger
 from src.monitoring.prometheus_metrics import documents_ingested
 
@@ -76,17 +84,29 @@ async def upload_document(
     file_path = UPLOAD_DIR / f"{uuid.uuid4()}_{file.filename}"
     file_path.write_bytes(content)
 
-    # Create document record (stub — in production this comes from DI + auth)
-    doc_id = uuid.uuid4()
-    logger.info("document_upload_received", doc_id=str(doc_id), file=file.filename, size=len(content))
+    document = Document(
+        file_name=file.filename or "unnamed",
+        file_type=file_ext,
+        file_size_bytes=len(content),
+        user_id=DEFAULT_USER_ID,
+        file_path=str(file_path),
+    )
+    if domain:
+        document.metadata.domain = domain
+    if tags:
+        document.metadata.tags = [t.strip() for t in tags.split(",") if t.strip()]
 
-    # Background ingestion task (pipeline wired via DI in production)
-    background_tasks.add_task(_run_ingestion_stub, doc_id, file_path, file_ext)
+    document_repo = get_document_repository()
+    await document_repo.save(document)
+
+    logger.info("document_upload_received", doc_id=str(document.id), file=file.filename, size=len(content))
+
+    background_tasks.add_task(_run_ingestion, get_ingestion_pipeline(), document, file_path)
 
     documents_ingested.labels(file_type=file_ext, status="pending").inc()
 
     return UploadResponse(
-        document_id=str(doc_id),
+        document_id=str(document.id),
         file_name=file.filename or "",
         status="processing",
         message="Document accepted for ingestion. Poll /documents/{id} for status.",
@@ -95,22 +115,61 @@ async def upload_document(
 
 @router.get("/documents", response_model=DocumentListResponse)
 async def list_documents(page: int = 1, size: int = 20) -> DocumentListResponse:
-    # Stub — full implementation wires DocumentRepository from DI
-    return DocumentListResponse(items=[], total=0, page=page, size=size)
+    document_repo = get_document_repository()
+    documents, total = await document_repo.list_by_user(DEFAULT_USER_ID, page=page, size=size)
+    return DocumentListResponse(
+        items=[_to_response(d) for d in documents],
+        total=total,
+        page=page,
+        size=size,
+    )
 
 
 @router.get("/documents/{document_id}", response_model=DocumentResponse)
 async def get_document(document_id: str) -> DocumentResponse:
-    raise HTTPException(status_code=http_status.HTTP_404_NOT_FOUND, detail="Document not found")
+    document_repo = get_document_repository()
+    document = await document_repo.get_by_id(uuid.UUID(document_id))
+    if document is None:
+        raise HTTPException(status_code=http_status.HTTP_404_NOT_FOUND, detail="Document not found")
+    return _to_response(document)
 
 
 @router.delete("/documents/{document_id}")
 async def delete_document(document_id: str) -> dict:
-    logger.info("document_delete_requested", doc_id=document_id)
-    return {"document_id": document_id, "deleted_chunks": 0, "message": "Document deleted."}
+    doc_uuid = uuid.UUID(document_id)
+    document_repo = get_document_repository()
+    chunk_repo = get_chunk_repository()
+
+    deleted_chunks = len(await chunk_repo.get_by_document(doc_uuid))
+
+    # Vector/search indexes are separate stores from Postgres and aren't
+    # covered by the documents.id FK cascade, so they need explicit cleanup
+    # before (or regardless of) the Postgres row going away.
+    await get_vector_repository().delete_by_document(doc_uuid)
+    await get_search_repository().delete_by_document(doc_uuid)
+
+    deleted = await document_repo.delete(doc_uuid)
+    if not deleted:
+        raise HTTPException(status_code=http_status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+    logger.info("document_delete_requested", doc_id=document_id, deleted_chunks=deleted_chunks)
+    return {"document_id": document_id, "deleted_chunks": deleted_chunks, "message": "Document deleted."}
 
 
-async def _run_ingestion_stub(doc_id: uuid.UUID, file_path: Path, file_type: str) -> None:
-    """Placeholder — replaced by full IngestionPipeline.ingest() when DI is wired."""
-    logger.info("ingestion_background_task_started", doc_id=str(doc_id), file=str(file_path))
-    # Full pipeline call: await pipeline.ingest(document, file_path)
+def _to_response(document: Document) -> DocumentResponse:
+    return DocumentResponse(
+        id=str(document.id),
+        file_name=document.file_name,
+        file_type=document.file_type,
+        status=document.status.value,
+        page_count=document.page_count,
+        word_count=document.word_count,
+        domain=document.metadata.domain,
+        tags=document.metadata.tags,
+        indexed_at=document.indexed_at.isoformat() if document.indexed_at else None,
+        created_at=document.created_at.isoformat(),
+    )
+
+
+async def _run_ingestion(pipeline: IngestionPipeline, document: Document, file_path: Path) -> None:
+    await pipeline.ingest(document, file_path)

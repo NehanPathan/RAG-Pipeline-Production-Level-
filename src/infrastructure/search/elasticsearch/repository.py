@@ -49,36 +49,47 @@ class ElasticsearchSearchRepository(SearchRepository):
     async def create_index_if_not_exists(self) -> None:
         exists = await self._client.indices.exists(index=self._index_name)
         if not exists:
-            await self._client.indices.create(index=self._index_name, body=INDEX_MAPPINGS)
+            await self._client.indices.create(
+                index=self._index_name,
+                mappings=INDEX_MAPPINGS["mappings"],
+                settings=INDEX_MAPPINGS["settings"],
+            )
             logger.info("elasticsearch_index_created", index=self._index_name)
 
-    async def index_batch(self, chunks: list[DocumentChunk]) -> None:
+    async def index_batch(self, chunks: list[DocumentChunk], batch_size: int = 200) -> None:
         if not chunks:
             return
-        operations = []
-        for chunk in chunks:
-            operations.append({"index": {"_index": self._index_name, "_id": str(chunk.id)}})
-            operations.append({
-                "chunk_id": str(chunk.id),
-                "document_id": str(chunk.document_id),
-                "user_id": str(chunk.user_id) if chunk.user_id else None,
-                "content": chunk.content,
-                "chunk_type": chunk.chunk_type.value,
-                "position": chunk.position,
-                "token_count": chunk.token_count,
-                "page_number": chunk.chunk_metadata.page_number,
-                "section": chunk.chunk_metadata.section,
-                "contains_table": chunk.chunk_metadata.contains_table,
-                "parent_chunk_id": str(chunk.parent_chunk_id) if chunk.parent_chunk_id else None,
-                "domain": chunk.domain,
-                "tags": chunk.tags,
-                "file_type": chunk.file_type,
-                "document_name": chunk.document_name,
-            })
-        response = await self._client.bulk(operations=operations, refresh=True)
-        if response.get("errors"):
-            error_items = [i for i in response["items"] if "error" in i.get("index", {})]
-            logger.warning("elasticsearch_bulk_errors", count=len(error_items))
+        error_count = 0
+        # Large documents can produce hundreds of chunks; bulk-indexing them
+        # in one request risks write timeouts, so chunk the request itself.
+        for i in range(0, len(chunks), batch_size):
+            batch = chunks[i : i + batch_size]
+            operations = []
+            for chunk in batch:
+                operations.append({"index": {"_index": self._index_name, "_id": str(chunk.id)}})
+                operations.append({
+                    "chunk_id": str(chunk.id),
+                    "document_id": str(chunk.document_id),
+                    "user_id": str(chunk.user_id) if chunk.user_id else None,
+                    "content": chunk.content,
+                    "chunk_type": chunk.chunk_type.value,
+                    "position": chunk.position,
+                    "token_count": chunk.token_count,
+                    "page_number": chunk.chunk_metadata.page_number,
+                    "section": chunk.chunk_metadata.section,
+                    "contains_table": chunk.chunk_metadata.contains_table,
+                    "parent_chunk_id": str(chunk.parent_chunk_id) if chunk.parent_chunk_id else None,
+                    "domain": chunk.domain,
+                    "tags": chunk.tags,
+                    "file_type": chunk.file_type,
+                    "document_name": chunk.document_name,
+                })
+            response = await self._client.bulk(operations=operations, refresh=True)
+            if response.get("errors"):
+                error_count += len([i for i in response["items"] if "error" in i.get("index", {})])
+
+        if error_count:
+            logger.warning("elasticsearch_bulk_errors", count=error_count)
         else:
             logger.info("elasticsearch_indexed", count=len(chunks), index=self._index_name)
 
@@ -133,12 +144,17 @@ class ElasticsearchSearchRepository(SearchRepository):
         return result
 
     async def delete_by_document(self, document_id: uuid.UUID) -> int:
-        response = await self._client.delete_by_query(
-            index=self._index_name,
-            body={"query": {"term": {"document_id": str(document_id)}}},
-            refresh=True,
-        )
-        deleted = response.get("deleted", 0)
+        try:
+            response = await self._client.delete_by_query(
+                index=self._index_name,
+                query={"term": {"document_id": str(document_id)}},
+                refresh=True,
+            )
+            deleted = response.get("deleted", 0)
+        except Exception as exc:
+            # Index may not exist if the document failed before search indexing
+            logger.warning("elasticsearch_delete_skipped", document_id=str(document_id), error=str(exc))
+            return 0
         logger.info("elasticsearch_deleted", document_id=str(document_id), count=deleted)
         return deleted
 
@@ -161,7 +177,7 @@ class ElasticsearchSearchRepository(SearchRepository):
 
 def create_elasticsearch_client() -> AsyncElasticsearch:
     settings = get_settings()
-    kwargs: dict = {"hosts": [settings.elasticsearch_url]}
+    kwargs: dict = {"hosts": [settings.elasticsearch_url], "request_timeout": 60}
     if settings.elasticsearch_username:
         kwargs["basic_auth"] = (settings.elasticsearch_username, settings.elasticsearch_password)
     return AsyncElasticsearch(**kwargs)

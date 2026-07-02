@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import uuid
+
 from src.config import get_settings
+from src.infrastructure.database.postgres.chunk_repository import PostgresChunkRepository
+from src.infrastructure.database.postgres.connection import get_session_factory
+from src.infrastructure.database.postgres.document_repository import PostgresDocumentRepository
 from src.infrastructure.database.redis.connection import RedisCache, get_redis_client
 from src.infrastructure.search.elasticsearch.repository import (
     ElasticsearchSearchRepository,
@@ -11,8 +16,19 @@ from src.infrastructure.vector_store.qdrant.repository import (
     QdrantVectorRepository,
     create_qdrant_client,
 )
+from src.ingestion.chunkers.parent_child_chunker import ChunkingConfig, ParentChildChunker
+from src.ingestion.embedders.base import EmbeddingProvider
 from src.ingestion.embedders.openai_embedder import OpenAIEmbeddingProvider
+from src.ingestion.enrichers.llm_enricher import LLMMetadataEnricher
+from src.ingestion.loaders.docling_loader import DoclingLoader
+from src.ingestion.loaders.unstructured_loader import UnstructuredLoader
+from src.ingestion.pipeline import IngestionPipeline
 from src.llm.registry import get_llm_provider
+
+# Stand-in for the user identity real auth middleware (not yet built, see
+# chat.py's `user_id` comment) will derive from a JWT. Used so documents
+# have a valid FK to `users` until per-user auth is wired.
+DEFAULT_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 from src.retrieval.agents.filter_generator import FilterGenerator
 from src.retrieval.agents.intent_classifier import IntentClassifier
 from src.retrieval.agents.query_agent import QueryAgent
@@ -40,6 +56,67 @@ from src.retrieval.pipeline import QueryPipeline
 from src.retrieval.rerankers.registry import get_reranker
 from src.retrieval.searchers.bm25_searcher import BM25Searcher
 from src.retrieval.searchers.vector_searcher import VectorSearcher
+
+_embedder: EmbeddingProvider | None = None
+_vector_repo: QdrantVectorRepository | None = None
+_search_repo: ElasticsearchSearchRepository | None = None
+_cache_repo: QdrantSemanticCacheRepository | None = None
+
+
+def _get_embedder() -> EmbeddingProvider:
+    global _embedder
+    if _embedder is None:
+        settings = get_settings()
+        _embedder = OpenAIEmbeddingProvider(
+            api_key=settings.openai_api_key,
+            model=settings.openai_embedding_model,
+            dimensions=settings.openai_embedding_dimensions,
+            batch_size=settings.embedding_batch_size,
+            cache=RedisCache(get_redis_client()),
+            cache_ttl=settings.redis_ttl_embedding,
+        )
+    return _embedder
+
+
+def _get_vector_repo() -> QdrantVectorRepository:
+    global _vector_repo
+    if _vector_repo is None:
+        settings = get_settings()
+        _vector_repo = QdrantVectorRepository(
+            client=create_qdrant_client(), collection_name=settings.qdrant_collection_name
+        )
+    return _vector_repo
+
+
+def _get_search_repo() -> ElasticsearchSearchRepository:
+    global _search_repo
+    if _search_repo is None:
+        settings = get_settings()
+        _search_repo = ElasticsearchSearchRepository(
+            client=create_elasticsearch_client(), index_name=settings.elasticsearch_index_name
+        )
+    return _search_repo
+
+
+def _get_cache_repo() -> QdrantSemanticCacheRepository:
+    global _cache_repo
+    if _cache_repo is None:
+        settings = get_settings()
+        _cache_repo = QdrantSemanticCacheRepository(
+            client=create_qdrant_client(), collection_name=settings.qdrant_cache_collection_name
+        )
+    return _cache_repo
+
+
+async def ensure_cache_collection() -> None:
+    """Create the semantic-query-cache Qdrant collection if missing.
+
+    Unlike `document_chunks`, nothing in the chat path creates this
+    collection on demand (the cache is read-before-write on every query),
+    so it must be ensured once at startup instead.
+    """
+    await _get_cache_repo().create_collection_if_not_exists(_get_embedder().dimensions)
+
 
 _query_pipeline: QueryPipeline | None = None
 
@@ -73,24 +150,10 @@ def _build_query_pipeline() -> QueryPipeline:
     small_llm = get_llm_provider(settings, role="small")
     large_llm = get_llm_provider(settings, role="large")
 
-    embedder = OpenAIEmbeddingProvider(
-        api_key=settings.openai_api_key,
-        model=settings.openai_embedding_model,
-        dimensions=settings.openai_embedding_dimensions,
-        batch_size=settings.embedding_batch_size,
-        cache=RedisCache(get_redis_client()),
-        cache_ttl=settings.redis_ttl_embedding,
-    )
-
-    vector_repo = QdrantVectorRepository(
-        client=create_qdrant_client(), collection_name=settings.qdrant_collection_name
-    )
-    search_repo = ElasticsearchSearchRepository(
-        client=create_elasticsearch_client(), index_name=settings.elasticsearch_index_name
-    )
-    cache_repo = QdrantSemanticCacheRepository(
-        client=create_qdrant_client(), collection_name=settings.qdrant_cache_collection_name
-    )
+    embedder = _get_embedder()
+    vector_repo = _get_vector_repo()
+    search_repo = _get_search_repo()
+    cache_repo = _get_cache_repo()
 
     query_agent = QueryAgent(
         rewriter=QueryRewriter(small_llm),
@@ -148,4 +211,61 @@ def _build_query_pipeline() -> QueryPipeline:
         vector_top_k=settings.vector_search_top_k,
         bm25_top_k=settings.bm25_search_top_k,
         rerank_top_n=settings.rerank_top_n,
+    )
+
+
+_document_repository: PostgresDocumentRepository | None = None
+_chunk_repository: PostgresChunkRepository | None = None
+_ingestion_pipeline: IngestionPipeline | None = None
+
+
+def get_document_repository() -> PostgresDocumentRepository:
+    global _document_repository
+    if _document_repository is None:
+        _document_repository = PostgresDocumentRepository(get_session_factory())
+    return _document_repository
+
+
+def get_chunk_repository() -> PostgresChunkRepository:
+    global _chunk_repository
+    if _chunk_repository is None:
+        _chunk_repository = PostgresChunkRepository(get_session_factory())
+    return _chunk_repository
+
+
+def get_vector_repository() -> QdrantVectorRepository:
+    return _get_vector_repo()
+
+
+def get_search_repository() -> ElasticsearchSearchRepository:
+    return _get_search_repo()
+
+
+def get_ingestion_pipeline() -> IngestionPipeline:
+    """Singleton IngestionPipeline, mirroring get_query_pipeline()'s pattern."""
+    global _ingestion_pipeline
+    if _ingestion_pipeline is None:
+        _ingestion_pipeline = _build_ingestion_pipeline()
+    return _ingestion_pipeline
+
+
+def _build_ingestion_pipeline() -> IngestionPipeline:
+    settings = get_settings()
+    small_llm = get_llm_provider(settings, role="small")
+
+    return IngestionPipeline(
+        loaders=[DoclingLoader(), UnstructuredLoader()],
+        enricher=LLMMetadataEnricher(small_llm),
+        chunker=ParentChildChunker(
+            ChunkingConfig(
+                parent_chunk_size=settings.parent_chunk_size,
+                child_chunk_size=settings.child_chunk_size,
+                overlap=settings.chunk_overlap,
+            )
+        ),
+        embedding_provider=_get_embedder(),
+        document_repo=get_document_repository(),
+        chunk_repo=get_chunk_repository(),
+        vector_repo=_get_vector_repo(),
+        search_repo=_get_search_repo(),
     )
