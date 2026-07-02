@@ -10,19 +10,20 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-RUN groupadd -r raguser && useradd -r -g raguser raguser
+RUN groupadd -r raguser && useradd -r -g raguser -m -d /home/raguser raguser \
+    && chown raguser:raguser /home/raguser
 
-COPY --from=builder /app/.venv /app/.venv
-COPY src/ui/ ./src/ui/
-COPY src/config.py ./src/
-COPY src/__init__.py ./src/
+COPY --from=builder --chown=raguser:raguser /app/.venv /app/.venv
+COPY --chown=raguser:raguser src/ui/ ./src/ui/
+COPY --chown=raguser:raguser src/config.py ./src/
+COPY --chown=raguser:raguser src/__init__.py ./src/
 
 ENV PATH="/app/.venv/bin:$PATH"
 ENV PYTHONPATH="/app"
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
+ENV HOME=/home/raguser
 
-RUN chown -R raguser:raguser /app
 USER raguser
 
 EXPOSE 8501

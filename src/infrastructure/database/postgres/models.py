@@ -61,8 +61,15 @@ class DocumentModel(Base):
     indexed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     user: Mapped[UserModel] = relationship("UserModel", back_populates="documents")
-    metadata_record: Mapped[DocumentMetadataModel | None] = relationship("DocumentMetadataModel", back_populates="document", uselist=False)
-    chunks: Mapped[list[DocumentChunkModel]] = relationship("DocumentChunkModel", back_populates="document")
+    # passive_deletes=True: trust the FK's ondelete="CASCADE" in the DB rather
+    # than having the ORM issue `UPDATE ... SET document_id = NULL` first,
+    # which violates document_chunks.document_id's NOT NULL constraint.
+    metadata_record: Mapped[DocumentMetadataModel | None] = relationship(
+        "DocumentMetadataModel", back_populates="document", uselist=False, passive_deletes=True
+    )
+    chunks: Mapped[list[DocumentChunkModel]] = relationship(
+        "DocumentChunkModel", back_populates="document", passive_deletes=True
+    )
 
 
 class DocumentMetadataModel(Base):

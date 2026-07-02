@@ -55,7 +55,7 @@ class QdrantVectorRepository(VectorRepository):
             )
             logger.info("qdrant_collection_created", collection=self._collection_name, vector_size=vector_size)
 
-    async def upsert_batch(self, chunks: list[DocumentChunk]) -> None:
+    async def upsert_batch(self, chunks: list[DocumentChunk], batch_size: int = 100) -> None:
         if not chunks:
             return
         points = [
@@ -83,7 +83,12 @@ class QdrantVectorRepository(VectorRepository):
             for chunk in chunks
             if chunk.has_embedding()
         ]
-        await self._client.upsert(collection_name=self._collection_name, points=points)
+        # Large documents can produce hundreds of high-dimension vectors;
+        # upserting them in one request risks write timeouts, so chunk the
+        # request itself rather than relying on a single huge payload.
+        for i in range(0, len(points), batch_size):
+            batch = points[i : i + batch_size]
+            await self._client.upsert(collection_name=self._collection_name, points=batch)
         logger.info("qdrant_upserted", count=len(points), collection=self._collection_name)
 
     async def search(
@@ -130,22 +135,26 @@ class QdrantVectorRepository(VectorRepository):
         return scored_chunks
 
     async def delete_by_document(self, document_id: uuid.UUID) -> int:
-        result = await self._client.delete(
-            collection_name=self._collection_name,
-            points_selector=qdrant_models.FilterSelector(
-                filter=qdrant_models.Filter(
-                    must=[
-                        qdrant_models.FieldCondition(
-                            key="document_id",
-                            match=qdrant_models.MatchValue(value=str(document_id)),
-                        )
-                    ]
-                )
-            ),
-        )
-        deleted = result.result.deleted if result.result else 0
-        logger.info("qdrant_deleted", document_id=str(document_id), count=deleted)
-        return deleted
+        try:
+            await self._client.delete(
+                collection_name=self._collection_name,
+                points_selector=qdrant_models.FilterSelector(
+                    filter=qdrant_models.Filter(
+                        must=[
+                            qdrant_models.FieldCondition(
+                                key="document_id",
+                                match=qdrant_models.MatchValue(value=str(document_id)),
+                            )
+                        ]
+                    )
+                ),
+            )
+        except Exception as exc:
+            # Collection may not exist if the document failed before vector indexing
+            logger.warning("qdrant_delete_skipped", document_id=str(document_id), error=str(exc))
+            return 0
+        logger.info("qdrant_deleted", document_id=str(document_id))
+        return 0
 
     async def get_collection_info(self) -> dict:
         info = await self._client.get_collection(self._collection_name)
@@ -202,4 +211,5 @@ def create_qdrant_client() -> AsyncQdrantClient:
     return AsyncQdrantClient(
         url=settings.qdrant_url,
         api_key=settings.qdrant_api_key or None,
+        timeout=60,
     )

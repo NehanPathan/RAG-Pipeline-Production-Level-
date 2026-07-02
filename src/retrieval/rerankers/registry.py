@@ -7,15 +7,19 @@ from src.config import Settings
 from src.retrieval.rerankers.base import Reranker
 from src.retrieval.rerankers.bge_reranker import BGEReranker
 from src.retrieval.rerankers.cohere_reranker import CohereReranker
+from src.retrieval.rerankers.passthrough_reranker import PassthroughReranker
 
 
 def get_reranker(settings: Settings) -> Reranker:
     """Select and construct the configured Reranker.
 
-    Note: constructing BGEReranker loads (and may download) the real
-    cross-encoder model from HuggingFace Hub — call this once at app/DI
-    startup, not per-request, and never from a unit test.
+    - "passthrough": no ML inference, returns RRF-sorted top_n (best for CPU-only)
+    - "bge": local cross-encoder via sentence-transformers (needs GPU or is very slow on CPU)
+    - "cohere": cloud reranker API (requires COHERE_API_KEY)
     """
+    if settings.reranker_provider == "passthrough":
+        return PassthroughReranker()
+
     if settings.reranker_provider == "bge":
         cross_encoder = CrossEncoder(settings.bge_reranker_model)
         return BGEReranker(cross_encoder=cross_encoder, model_name=settings.bge_reranker_model)

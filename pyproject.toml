@@ -23,10 +23,10 @@ dependencies = [
     "redis[hiredis]>=5.2.0",
 
     # Vector Store
-    "qdrant-client>=1.12.0",
+    "qdrant-client>=1.12.0,<1.13.0",
 
     # Search
-    "elasticsearch[async]>=8.16.0",
+    "elasticsearch[async]>=8.16.0,<9.0.0",
 
     # Document Parsing
     "docling>=2.12.0",

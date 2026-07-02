@@ -127,7 +127,7 @@ class IngestionPipeline:
 
         except Exception as e:
             error_msg = str(e)
-            logger.error("ingestion_failed", document_id=str(document.id), error=error_msg)
+            logger.error("ingestion_failed", document_id=str(document.id), error=error_msg, exc_info=True)
             document.mark_failed(error_msg)
             await self._document_repo.update(document)
             return IngestionResult(

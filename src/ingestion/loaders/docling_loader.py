@@ -38,16 +38,22 @@ class DoclingLoader(DocumentLoader):
         tables: list[TableBlock] = []
         image_refs: list[ImageRef] = []
 
-        # Extract text by page
-        for page_no, page in enumerate(doc.pages, start=1):
-            page_text_parts = []
-            for item in page.body:
-                if hasattr(item, "text"):
-                    page_text_parts.append(item.text)
-            if page_text_parts:
+        # Extract text by page. `doc.pages` is keyed by page number and holds
+        # only page geometry (size/image) — the actual text content lives in
+        # the flat `doc.texts` list, with each item's page number coming from
+        # its first provenance entry.
+        page_text_parts: dict[int, list[str]] = {page_no: [] for page_no in doc.pages}
+        for item in doc.texts:
+            if not item.text or not item.prov:
+                continue
+            page_text_parts.setdefault(item.prov[0].page_no, []).append(item.text)
+
+        for page_no in sorted(page_text_parts):
+            parts = page_text_parts[page_no]
+            if parts:
                 text_blocks.append(
                     TextBlock(
-                        text="\n".join(page_text_parts),
+                        text="\n".join(parts),
                         page_number=page_no,
                     )
                 )
