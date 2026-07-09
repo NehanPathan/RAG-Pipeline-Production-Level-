@@ -86,3 +86,27 @@ def test_empty_document_produces_no_crash(small_chunker, doc_id):
     )
     chunks = small_chunker.chunk(doc_id, empty_doc)
     assert isinstance(chunks, list)
+
+
+def test_chunk_section_produces_parent_and_child_chunks(small_chunker, doc_id):
+    text = " ".join(f"word{i}" for i in range(200))
+    chunks = small_chunker.chunk_section(doc_id, text, page_number=3, section_title="Chapter 1")
+    parents = [c for c in chunks if c.chunk_type == ChunkType.PARENT]
+    children = [c for c in chunks if c.chunk_type == ChunkType.CHILD]
+    assert len(parents) >= 1
+    assert len(children) >= 1
+    assert all(c.chunk_metadata.page_number == 3 for c in chunks)
+    assert all(c.chunk_metadata.section_title == "Chapter 1" for c in chunks)
+
+
+def test_chunk_section_respects_start_position(small_chunker, doc_id):
+    chunks = small_chunker.chunk_section(doc_id, "short text", start_position=42)
+    assert chunks[0].position == 42
+
+
+def test_chunk_section_does_not_mutate_chunk_method(small_chunker, doc_id, raw_doc):
+    # chunk_section is additive -- calling it must not change chunk()'s output.
+    before = small_chunker.chunk(doc_id, raw_doc)
+    small_chunker.chunk_section(doc_id, "some other section text " * 50)
+    after = small_chunker.chunk(doc_id, raw_doc)
+    assert len(before) == len(after)

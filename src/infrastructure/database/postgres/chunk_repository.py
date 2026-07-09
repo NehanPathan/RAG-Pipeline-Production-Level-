@@ -39,6 +39,11 @@ class PostgresChunkRepository(ChunkRepository):
                         contains_table=chunk.chunk_metadata.contains_table,
                         embedding_model=chunk.embedding_model or None,
                         qdrant_point_id=chunk.qdrant_point_id,
+                        section_title=chunk.chunk_metadata.section_title,
+                        heading_level=chunk.chunk_metadata.heading_level,
+                        semantic_cluster=chunk.chunk_metadata.semantic_cluster,
+                        ocr_confidence=chunk.chunk_metadata.ocr_confidence,
+                        language=chunk.chunk_metadata.language,
                     )
                 )
             await session.commit()
@@ -95,6 +100,11 @@ def _to_entity(model: DocumentChunkModel) -> DocumentChunk:
             page_number=model.page_number,
             section=model.section,
             contains_table=model.contains_table,
+            section_title=model.section_title,
+            heading_level=model.heading_level,
+            semantic_cluster=model.semantic_cluster,
+            ocr_confidence=model.ocr_confidence,
+            language=model.language,
         ),
         qdrant_point_id=model.qdrant_point_id,
         created_at=model.created_at,

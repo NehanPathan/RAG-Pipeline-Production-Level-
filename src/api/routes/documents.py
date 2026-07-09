@@ -12,11 +12,13 @@ from src.api.dependencies import (
     get_chunk_repository,
     get_document_repository,
     get_ingestion_pipeline,
+    get_intelligence_repository,
     get_search_repository,
     get_vector_repository,
 )
 from src.config import get_settings
-from src.domain.entities.document import Document
+from src.domain.entities.document import Document, DocumentChunk
+from src.domain.value_objects.document_intelligence import DocumentIntelligenceSummary
 from src.ingestion.pipeline import IngestionPipeline
 from src.monitoring.logger import get_logger
 from src.monitoring.prometheus_metrics import documents_ingested
@@ -53,6 +55,57 @@ class UploadResponse(BaseModel):
     file_name: str
     status: str
     message: str
+
+
+class SimilarityEdgeResponse(BaseModel):
+    chunk_id_a: str
+    chunk_id_b: str
+    similarity: float
+
+
+class LayoutSummaryResponse(BaseModel):
+    headings: list[dict]
+    outline: list[dict]
+    tables_count: int
+    figures_count: int
+    lists_count: int
+    forms_count: int
+    footnotes_count: int
+
+
+class ChunkResponse(BaseModel):
+    id: str
+    parent_chunk_id: str | None
+    chunk_type: str
+    content: str
+    position: int
+    page_number: int | None
+    section_title: str | None
+    heading_level: int | None
+    semantic_cluster: int | None
+    ocr_confidence: float | None
+    language: str | None
+    token_count: int
+    embedding_model: str
+
+
+class ChunkListResponse(BaseModel):
+    items: list[ChunkResponse]
+    total: int
+
+
+class DocumentIntelligenceResponse(BaseModel):
+    document_id: str
+    ocr_engine: str
+    ocr_ran: bool
+    ocr_confidence_avg: float | None
+    ocr_processing_time_ms: float
+    ocr_language: str | None
+    embedding_model_chunking: str
+    embedding_model_retrieval: str
+    layout: LayoutSummaryResponse
+    semantic_graph: list[SimilarityEdgeResponse]
+    created_at: str | None
 
 
 @router.post("/documents", response_model=UploadResponse, status_code=http_status.HTTP_202_ACCEPTED)
@@ -134,6 +187,25 @@ async def get_document(document_id: str) -> DocumentResponse:
     return _to_response(document)
 
 
+@router.get("/documents/{document_id}/chunks", response_model=ChunkListResponse)
+async def get_document_chunks(document_id: str) -> ChunkListResponse:
+    chunk_repo = get_chunk_repository()
+    chunks = await chunk_repo.get_by_document(uuid.UUID(document_id))
+    return ChunkListResponse(items=[_to_chunk_response(c) for c in chunks], total=len(chunks))
+
+
+@router.get("/documents/{document_id}/intelligence", response_model=DocumentIntelligenceResponse)
+async def get_document_intelligence(document_id: str) -> DocumentIntelligenceResponse:
+    intelligence_repo = get_intelligence_repository()
+    summary = await intelligence_repo.get_by_document(uuid.UUID(document_id))
+    if summary is None:
+        raise HTTPException(
+            status_code=http_status.HTTP_404_NOT_FOUND,
+            detail="No Document Intelligence data for this document (not yet indexed, or indexed before Phase 4A).",
+        )
+    return _to_intelligence_response(summary)
+
+
 @router.delete("/documents/{document_id}")
 async def delete_document(document_id: str) -> dict:
     doc_uuid = uuid.UUID(document_id)
@@ -168,6 +240,55 @@ def _to_response(document: Document) -> DocumentResponse:
         tags=document.metadata.tags,
         indexed_at=document.indexed_at.isoformat() if document.indexed_at else None,
         created_at=document.created_at.isoformat(),
+    )
+
+
+def _to_chunk_response(chunk: DocumentChunk) -> ChunkResponse:
+    return ChunkResponse(
+        id=str(chunk.id),
+        parent_chunk_id=str(chunk.parent_chunk_id) if chunk.parent_chunk_id else None,
+        chunk_type=chunk.chunk_type.value,
+        content=chunk.content,
+        position=chunk.position,
+        page_number=chunk.chunk_metadata.page_number,
+        section_title=chunk.chunk_metadata.section_title,
+        heading_level=chunk.chunk_metadata.heading_level,
+        semantic_cluster=chunk.chunk_metadata.semantic_cluster,
+        ocr_confidence=chunk.chunk_metadata.ocr_confidence,
+        language=chunk.chunk_metadata.language,
+        token_count=chunk.token_count,
+        embedding_model=chunk.embedding_model,
+    )
+
+
+def _to_intelligence_response(summary: DocumentIntelligenceSummary) -> DocumentIntelligenceResponse:
+    return DocumentIntelligenceResponse(
+        document_id=str(summary.document_id),
+        ocr_engine=summary.ocr_engine,
+        ocr_ran=summary.ocr_ran,
+        ocr_confidence_avg=summary.ocr_confidence_avg,
+        ocr_processing_time_ms=summary.ocr_processing_time_ms,
+        ocr_language=summary.ocr_language,
+        embedding_model_chunking=summary.embedding_model_chunking,
+        embedding_model_retrieval=summary.embedding_model_retrieval,
+        layout=LayoutSummaryResponse(
+            headings=summary.layout.headings,
+            outline=summary.layout.outline,
+            tables_count=summary.layout.tables_count,
+            figures_count=summary.layout.figures_count,
+            lists_count=summary.layout.lists_count,
+            forms_count=summary.layout.forms_count,
+            footnotes_count=summary.layout.footnotes_count,
+        ),
+        semantic_graph=[
+            SimilarityEdgeResponse(
+                chunk_id_a=str(edge.chunk_id_a),
+                chunk_id_b=str(edge.chunk_id_b),
+                similarity=edge.similarity,
+            )
+            for edge in summary.semantic_graph
+        ],
+        created_at=summary.created_at.isoformat() if summary.created_at else None,
     )
 
 

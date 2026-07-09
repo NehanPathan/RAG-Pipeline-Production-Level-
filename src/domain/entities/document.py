@@ -69,6 +69,16 @@ class ChunkMetadata:
     section: str | None = None
     contains_table: bool = False
     table_data: dict | None = None
+    # Additive Phase 4A fields (Part 5) -- all optional so every existing
+    # `ChunkMetadata(...)` construction site and test stays unaffected.
+    # `section` (above) is pre-existing free-text; `section_title` is the
+    # structured heading text HybridChunkingPipeline's StructureChunker
+    # attaches, kept as a distinct field rather than overloading `section`.
+    section_title: str | None = None
+    heading_level: int | None = None
+    semantic_cluster: int | None = None
+    ocr_confidence: float | None = None
+    language: str | None = None
 
 
 @dataclass
