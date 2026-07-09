@@ -23,14 +23,28 @@ dependencies = [
     "redis[hiredis]>=5.2.0",
 
     # Vector Store
-    "qdrant-client>=1.12.0",
+    "qdrant-client>=1.12.0,<1.13.0",
 
     # Search
-    "elasticsearch[async]>=8.16.0",
+    "elasticsearch[async]>=8.16.0,<9.0.0",
 
     # Document Parsing
     "docling>=2.12.0",
     "unstructured[all-docs]>=0.16.0",
+
+    # OCR (default local engine -- Tesseract; needs the system `tesseract-ocr`
+    # + `poppler-utils` binaries, see docker/api.Dockerfile). The importable
+    # OCR module itself is NOT listed here as its own dependency --
+    # `unstructured[all-docs]` (above) already transitively pulls in
+    # `unstructured-pytesseract`, a maintained drop-in fork of `pytesseract`
+    # published under a different PyPI name -- confirmed live that it ALSO
+    # installs under a different top-level module name
+    # (`import unstructured_pytesseract`, not `import pytesseract`; see
+    # src/ingestion/ocr/registry.py). Adding the original `pytesseract`
+    # package on top would still be redundant (same functionality, needless
+    # second dependency) even though the naming means it wouldn't literally
+    # conflict as previously assumed here.
+    "pdf2image>=1.17.0",
 
     # Embeddings / Reranking
     "openai>=1.56.0",

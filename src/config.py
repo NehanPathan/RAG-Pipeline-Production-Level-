@@ -55,11 +55,18 @@ class Settings(BaseSettings):
     large_llm_provider: str = "openai"
 
     # Embeddings
-    embedding_provider: str = "openai"
+    embedding_provider: str = "openai"  # retrieval role -- openai | bge_m3 | e5_large
     openai_embedding_model: str = "text-embedding-3-large"
     openai_embedding_dimensions: int = 3072
     embedding_batch_size: int = 100
     embedding_max_retries: int = 3
+
+    # Chunking-role embedding (Part 6 dual-role EmbeddingStrategy) -- may
+    # differ from `embedding_provider` (the retrieval role) since chunking
+    # only needs relative similarity, not the exact vectors stored in Qdrant.
+    chunking_embedding_provider: str = "bge_m3"  # bge_m3 | e5_large | openai
+    bge_model_name: str = "BAAI/bge-m3"
+    e5_model_name: str = "intfloat/e5-large-v2"
 
     # Reranking
     reranker_provider: str = "bge"
@@ -71,12 +78,26 @@ class Settings(BaseSettings):
     default_loader: str = "docling"
     llamaparse_api_key: str = ""
     max_file_size_mb: int = 100
-    allowed_file_types: str = "pdf,docx,txt,md,html"
+    allowed_file_types: str = "pdf,docx,txt,md,html,png,jpg,jpeg,tiff,bmp"
 
-    # Chunking
+    # OCR
+    ocr_provider: str = "tesseract"  # tesseract | paddle | baidu_unlimited
+    ocr_min_words_per_page: float = 10.0
+    paddle_ocr_lang: str = "en"
+    baidu_ocr_api_key: str = ""
+    baidu_ocr_secret_key: str = ""
+
+    # Chunking (ParentChildChunker -- reused inside HybridChunkingPipeline)
     parent_chunk_size: int = 1024
     child_chunk_size: int = 256
     chunk_overlap: int = 32
+
+    # Hybrid Chunking (Part 4) -- SemanticChunker's adaptive threshold and
+    # ChunkValidator's rejection thresholds
+    semantic_chunk_std_multiplier: float = 1.0
+    semantic_chunk_min_sentences: int = 3
+    chunk_validator_min_chars: int = 10
+    chunk_validator_min_ocr_confidence: float = 0.35
 
     # Query Intelligence
     query_expansion_count: int = 3

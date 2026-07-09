@@ -42,6 +42,11 @@ if prompt := st.chat_input("Ask a question about your documents..."):
         placeholder = st.empty()
         full_answer = ""
         citations = []
+        received_first_token = False
+
+        # Show a thinking indicator immediately — retrieval can take several
+        # seconds before the first token is streamed.
+        placeholder.markdown("_Searching documents and thinking..._")
 
         try:
             with httpx.Client(timeout=120) as client:
@@ -68,6 +73,9 @@ if prompt := st.chat_input("Ask a question about your documents..."):
 
                         etype = event.get("type")
                         if etype == "token":
+                            if not received_first_token:
+                                # First token — clear the thinking indicator
+                                received_first_token = True
                             full_answer += event.get("content", "")
                             placeholder.markdown(full_answer + "▌")
                         elif etype == "done":
@@ -75,20 +83,21 @@ if prompt := st.chat_input("Ask a question about your documents..."):
                             citations = event.get("citations", [])
                             if event.get("conversation_id"):
                                 st.session_state.conversation_id = event["conversation_id"]
+                        elif etype == "error":
+                            placeholder.error(f"Backend error: {event.get('message', 'unknown')}")
+                            full_answer = f"Error: {event.get('message', 'unknown')}"
 
-            placeholder.markdown(full_answer)
+            placeholder.markdown(full_answer if full_answer else "_No response received._")
             if citations:
                 with st.expander("Sources"):
                     for cite in citations:
-                        st.markdown(f"**[{cite['index']}]** {cite.get('document_name', '')} — p.{cite.get('page_number', '?')}")
-
-            # Feedback
-            col1, col2 = st.columns([1, 1])
-            # col1.button("👍", key=f"up_{len(st.session_state.messages)}")
-            # col2.button("👎", key=f"down_{len(st.session_state.messages)}")
+                        st.markdown(
+                            f"**[{cite['index']}]** {cite.get('document_name', '')} "
+                            f"— p.{cite.get('page_number', '?')}"
+                        )
 
         except Exception as e:
-            st.error(f"Error connecting to API: {e}")
+            placeholder.error(f"Error connecting to API: {e}")
             full_answer = f"Error: {e}"
 
     st.session_state.messages.append({

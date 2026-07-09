@@ -6,10 +6,29 @@ from pathlib import Path
 
 
 @dataclass
+class BoundingBox:
+    x0: float
+    y0: float
+    x1: float
+    y1: float
+
+
+@dataclass
 class TextBlock:
     text: str
     page_number: int | None = None
     section: str | None = None
+    # Structural label attached by the loader when it has one available
+    # (Docling: DocItemLabel value e.g. "section_header"/"list_item"/
+    # "caption"/"footnote"/"title"; Unstructured: element.category e.g.
+    # "Title"/"ListItem"/"Table"). None when the loader has no structural
+    # signal (e.g. a plain .txt read) -- LayoutAnalyzer falls back to
+    # heuristics in that case. Additive field: existing construction call
+    # sites and tests are unaffected by the default.
+    element_label: str | None = None
+    heading_level: int | None = None
+    is_footnote: bool = False
+    bbox: BoundingBox | None = None
 
 
 @dataclass

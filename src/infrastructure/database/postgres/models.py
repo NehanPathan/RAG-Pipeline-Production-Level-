@@ -61,8 +61,15 @@ class DocumentModel(Base):
     indexed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     user: Mapped[UserModel] = relationship("UserModel", back_populates="documents")
-    metadata_record: Mapped[DocumentMetadataModel | None] = relationship("DocumentMetadataModel", back_populates="document", uselist=False)
-    chunks: Mapped[list[DocumentChunkModel]] = relationship("DocumentChunkModel", back_populates="document")
+    # passive_deletes=True: trust the FK's ondelete="CASCADE" in the DB rather
+    # than having the ORM issue `UPDATE ... SET document_id = NULL` first,
+    # which violates document_chunks.document_id's NOT NULL constraint.
+    metadata_record: Mapped[DocumentMetadataModel | None] = relationship(
+        "DocumentMetadataModel", back_populates="document", uselist=False, passive_deletes=True
+    )
+    chunks: Mapped[list[DocumentChunkModel]] = relationship(
+        "DocumentChunkModel", back_populates="document", passive_deletes=True
+    )
 
 
 class DocumentMetadataModel(Base):
@@ -100,7 +107,38 @@ class DocumentChunkModel(Base):
     qdrant_point_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
+    # Additive Phase 4A columns (Part 5) -- all nullable, no backfill needed;
+    # existing rows read as NULL. See docs/architecture/12_phase4a_design_review.md.
+    section_title: Mapped[str | None] = mapped_column(String(500))
+    heading_level: Mapped[int | None] = mapped_column(Integer)
+    semantic_cluster: Mapped[int | None] = mapped_column(Integer)
+    ocr_confidence: Mapped[float | None] = mapped_column(Float)
+    language: Mapped[str | None] = mapped_column(String(20))
+
     document: Mapped[DocumentModel] = relationship("DocumentModel", back_populates="chunks")
+
+
+class DocumentIntelligenceModel(Base):
+    """Document-level OCR/layout/embedding summary (Part 7's Document
+    Intelligence UI reads this) -- one row per document, additive new table,
+    see docs/architecture/12_phase4a_design_review.md."""
+
+    __tablename__ = "document_intelligence"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"), unique=True
+    )
+    ocr_engine: Mapped[str] = mapped_column(String(50), nullable=False)
+    ocr_ran: Mapped[bool] = mapped_column(Boolean, default=False)
+    ocr_confidence_avg: Mapped[float | None] = mapped_column(Float)
+    ocr_processing_time_ms: Mapped[float] = mapped_column(Float, default=0.0)
+    ocr_language: Mapped[str | None] = mapped_column(String(20))
+    embedding_model_chunking: Mapped[str] = mapped_column(String(100), nullable=False)
+    embedding_model_retrieval: Mapped[str] = mapped_column(String(100), nullable=False)
+    layout_outline: Mapped[dict] = mapped_column(JSONB, default=dict)
+    semantic_graph: Mapped[list] = mapped_column(JSONB, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class ConversationModel(Base):

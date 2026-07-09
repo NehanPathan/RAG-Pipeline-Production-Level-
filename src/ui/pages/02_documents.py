@@ -44,32 +44,67 @@ with tab_upload:
 
 with tab_list:
     st.subheader("Indexed Documents")
-    if st.button("Refresh"):
-        st.rerun()
+
+    col_refresh, col_page = st.columns([1, 3])
+    with col_refresh:
+        if st.button("Refresh"):
+            st.rerun()
 
     try:
         response = httpx.get(f"{API_BASE}/api/v1/documents", timeout=10)
         if response.status_code == 200:
             data = response.json()
             docs = data.get("items", [])
+            total = data.get("total", 0)
+
+            st.caption(f"Total: {total} document(s)")
+
             if docs:
+                _status_icon = {
+                    "indexed": "🟢",
+                    "processing": "🟡",
+                    "pending": "⏳",
+                    "failed": "🔴",
+                }
                 for doc in docs:
-                    status_color = {"indexed": "green", "processing": "orange", "failed": "red", "pending": "gray"}.get(doc["status"], "gray")
-                    with st.expander(f"📄 {doc['file_name']} — :{status_color}[{doc['status'].upper()}]"):
+                    icon = _status_icon.get(doc["status"], "⚪")
+                    label = f"{icon} {doc['file_name']} — {doc['status'].upper()}"
+                    with st.expander(label):
                         col1, col2, col3 = st.columns(3)
                         col1.metric("Type", doc.get("file_type", "?").upper())
-                        col2.metric("Pages", doc.get("page_count", "?"))
-                        col3.metric("Domain", doc.get("domain", "?"))
+                        col2.metric("Pages", doc.get("page_count") or "—")
+                        col3.metric("Domain", doc.get("domain") or "—")
                         if doc.get("tags"):
                             st.write("**Tags:**", ", ".join(doc["tags"]))
-                        st.caption(f"ID: {doc['id']}")
-                        col_r, col_d = st.columns([1, 1])
-                        if col_r.button("Reindex", key=f"reindex_{doc['id']}"):
-                            st.warning("Reindex not yet connected.")
+                        if doc.get("indexed_at"):
+                            st.caption(f"Indexed: {doc['indexed_at']}")
+                        st.caption(f"Created: {doc['created_at']}  |  ID: {doc['id']}")
+
+                        _, col_d = st.columns([3, 1])
                         if col_d.button("Delete", key=f"delete_{doc['id']}", type="secondary"):
-                            st.warning("Delete not yet connected.")
+                            try:
+                                del_response = httpx.delete(
+                                    f"{API_BASE}/api/v1/documents/{doc['id']}", timeout=30
+                                )
+                                if del_response.status_code == 200:
+                                    st.success("Document deleted.")
+                                    time.sleep(0.5)
+                                    st.rerun()
+                                else:
+                                    st.error(f"Delete failed: {del_response.text}")
+                            except Exception as e:
+                                st.error(f"Connection error: {e}")
+
+                # Auto-refresh if any document is still being processed
+                still_processing = any(
+                    d["status"] in ("processing", "pending") for d in docs
+                )
+                if still_processing:
+                    st.info("Some documents are still processing — refreshing in 5 seconds...")
+                    time.sleep(5)
+                    st.rerun()
             else:
-                st.info("No documents indexed yet. Upload some documents first.")
+                st.info("No documents yet. Upload some files in the Upload tab.")
         else:
             st.error(f"Failed to fetch documents: {response.status_code}")
     except Exception as e:

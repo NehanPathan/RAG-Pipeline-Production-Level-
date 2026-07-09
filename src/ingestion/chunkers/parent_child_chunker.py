@@ -30,6 +30,12 @@ class ParentChildChunker:
         self._config = config or ChunkingConfig()
         self._encoder = tiktoken.get_encoding(self._config.encoding_name)
 
+    def count_tokens(self, text: str) -> int:
+        """Exposes the encoder already used internally by chunk()/
+        chunk_section() so callers (HybridChunkingPipeline's table chunks)
+        don't need their own tiktoken setup."""
+        return len(self._encoder.encode(text))
+
     def chunk(self, document_id: uuid.UUID, raw_document: RawDocument) -> list[DocumentChunk]:
         all_chunks: list[DocumentChunk] = []
         position = 0
@@ -104,6 +110,61 @@ class ParentChildChunker:
             table_chunks=sum(1 for c in all_chunks if c.chunk_type == ChunkType.TABLE),
         )
         return all_chunks
+
+    def chunk_section(
+        self,
+        document_id: uuid.UUID,
+        text: str,
+        page_number: int | None = None,
+        section_title: str | None = None,
+        start_position: int = 0,
+    ) -> list[DocumentChunk]:
+        """Same parent/child token-window splitting as `chunk()`, scoped to a
+        single semantic segment's text instead of the whole document.
+
+        Used by HybridChunkingPipeline (Part 4 Step 3), which calls this once
+        per SemanticSegment rather than once for the entire RawDocument --
+        `chunk()` itself is unchanged, and this reuses the same private
+        `_split_into_token_chunks` helper it already uses internally (Gap 4,
+        docs/architecture/12_phase4a_design_review.md).
+        """
+        chunks: list[DocumentChunk] = []
+        position = start_position
+
+        parent_tokens = self._split_into_token_chunks(text, self._config.parent_chunk_size, self._config.overlap)
+        for parent_text, _ in parent_tokens:
+            if not parent_text.strip():
+                continue
+            parent_chunk = DocumentChunk(
+                document_id=document_id,
+                content=parent_text,
+                position=position,
+                chunk_type=ChunkType.PARENT,
+                token_count=len(self._encoder.encode(parent_text)),
+                chunk_metadata=ChunkMetadata(page_number=page_number, section_title=section_title),
+            )
+            chunks.append(parent_chunk)
+            position += 1
+
+            child_tokens = self._split_into_token_chunks(
+                parent_text, self._config.child_chunk_size, self._config.overlap
+            )
+            for child_text, _ in child_tokens:
+                if not child_text.strip():
+                    continue
+                child_chunk = DocumentChunk(
+                    document_id=document_id,
+                    content=child_text,
+                    position=position,
+                    chunk_type=ChunkType.CHILD,
+                    parent_chunk_id=parent_chunk.id,
+                    token_count=len(self._encoder.encode(child_text)),
+                    chunk_metadata=ChunkMetadata(page_number=page_number, section_title=section_title),
+                )
+                chunks.append(child_chunk)
+                position += 1
+
+        return chunks
 
     def _merge_text_blocks(self, raw_document: RawDocument) -> tuple[str, int | None]:
         """Merge all text blocks into a single string, return (text, first_page_num)."""
