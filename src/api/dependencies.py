@@ -5,6 +5,9 @@ import uuid
 from src.config import get_settings
 from src.infrastructure.database.postgres.chunk_repository import PostgresChunkRepository
 from src.infrastructure.database.postgres.connection import get_session_factory
+from src.infrastructure.database.postgres.document_intelligence_repository import (
+    PostgresDocumentIntelligenceRepository,
+)
 from src.infrastructure.database.postgres.document_repository import PostgresDocumentRepository
 from src.infrastructure.database.redis.connection import RedisCache, get_redis_client
 from src.infrastructure.search.elasticsearch.repository import (
@@ -16,12 +19,26 @@ from src.infrastructure.vector_store.qdrant.repository import (
     QdrantVectorRepository,
     create_qdrant_client,
 )
+from src.ingestion.chunkers.chunk_validator import ChunkValidator
+from src.ingestion.chunkers.chunking_strategy import ChunkingStrategy
+from src.ingestion.chunkers.hybrid_chunking_pipeline import HybridChunkingPipeline
 from src.ingestion.chunkers.parent_child_chunker import ChunkingConfig, ParentChildChunker
+from src.ingestion.chunkers.semantic_chunker import SemanticChunker
+from src.ingestion.chunkers.structure_chunker import StructureChunker
 from src.ingestion.embedders.base import EmbeddingProvider
+from src.ingestion.embedders.embedding_strategy import EmbeddingStrategy
 from src.ingestion.embedders.openai_embedder import OpenAIEmbeddingProvider
+from src.ingestion.embedders.registry import get_embedding_provider
 from src.ingestion.enrichers.llm_enricher import LLMMetadataEnricher
+from src.ingestion.layout.heuristic_layout_analyzer import HeuristicLayoutAnalyzer
+from src.ingestion.layout.labeled_layout_analyzer import LabeledLayoutAnalyzer
 from src.ingestion.loaders.docling_loader import DoclingLoader
+from src.ingestion.loaders.image_loader import ImagePassthroughLoader
 from src.ingestion.loaders.unstructured_loader import UnstructuredLoader
+from src.ingestion.ocr.detector import OCRDetector
+from src.ingestion.ocr.registry import get_ocr_provider
+from src.ingestion.parsing.intelligence_recorder import DocumentIntelligenceRecorder
+from src.ingestion.parsing.parsing_orchestrator import DocumentParsingService
 from src.ingestion.pipeline import IngestionPipeline
 from src.llm.registry import get_llm_provider
 
@@ -216,6 +233,7 @@ def _build_query_pipeline() -> QueryPipeline:
 
 _document_repository: PostgresDocumentRepository | None = None
 _chunk_repository: PostgresChunkRepository | None = None
+_intelligence_repository: PostgresDocumentIntelligenceRepository | None = None
 _ingestion_pipeline: IngestionPipeline | None = None
 
 
@@ -231,6 +249,13 @@ def get_chunk_repository() -> PostgresChunkRepository:
     if _chunk_repository is None:
         _chunk_repository = PostgresChunkRepository(get_session_factory())
     return _chunk_repository
+
+
+def get_intelligence_repository() -> PostgresDocumentIntelligenceRepository:
+    global _intelligence_repository
+    if _intelligence_repository is None:
+        _intelligence_repository = PostgresDocumentIntelligenceRepository(get_session_factory())
+    return _intelligence_repository
 
 
 def get_vector_repository() -> QdrantVectorRepository:
@@ -253,19 +278,54 @@ def _build_ingestion_pipeline() -> IngestionPipeline:
     settings = get_settings()
     small_llm = get_llm_provider(settings, role="small")
 
-    return IngestionPipeline(
-        loaders=[DoclingLoader(), UnstructuredLoader()],
-        enricher=LLMMetadataEnricher(small_llm),
-        chunker=ParentChildChunker(
-            ChunkingConfig(
-                parent_chunk_size=settings.parent_chunk_size,
-                child_chunk_size=settings.child_chunk_size,
-                overlap=settings.chunk_overlap,
-            )
+    parent_child_chunker = ParentChildChunker(
+        ChunkingConfig(
+            parent_chunk_size=settings.parent_chunk_size,
+            child_chunk_size=settings.child_chunk_size,
+            overlap=settings.chunk_overlap,
+        )
+    )
+
+    # `retrieval_provider` reuses the existing `_get_embedder()` singleton
+    # (the same instance VectorSearcher/SemanticCache embed queries with) so
+    # ingestion and query time never drift onto different embedding spaces.
+    # `chunking_provider` is a separate, new role (Part 6) -- only used for
+    # SemanticChunker's topic-boundary detection, never stored in Qdrant.
+    embedding_strategy = EmbeddingStrategy(
+        chunking_provider=get_embedding_provider(settings, role="chunking"),
+        retrieval_provider=_get_embedder(),
+    )
+
+    hybrid_chunking_pipeline: ChunkingStrategy = HybridChunkingPipeline(
+        structure_chunker=StructureChunker(),
+        semantic_chunker=SemanticChunker(
+            embedding_provider=embedding_strategy.chunking_provider,
+            std_multiplier=settings.semantic_chunk_std_multiplier,
+            min_sentences_for_split=settings.semantic_chunk_min_sentences,
         ),
-        embedding_provider=_get_embedder(),
+        parent_child_chunker=parent_child_chunker,
+        validator=ChunkValidator(
+            min_chars=settings.chunk_validator_min_chars,
+            min_ocr_confidence=settings.chunk_validator_min_ocr_confidence,
+        ),
+    )
+
+    parsing_service = DocumentParsingService(
+        ocr_detector=OCRDetector(min_words_per_page=settings.ocr_min_words_per_page),
+        ocr_provider=get_ocr_provider(settings),
+        labeled_analyzer=LabeledLayoutAnalyzer(),
+        heuristic_analyzer=HeuristicLayoutAnalyzer(),
+    )
+
+    return IngestionPipeline(
+        loaders=[DoclingLoader(), ImagePassthroughLoader(), UnstructuredLoader()],
+        enricher=LLMMetadataEnricher(small_llm),
+        parsing_service=parsing_service,
+        chunking_strategy=hybrid_chunking_pipeline,
+        embedding_strategy=embedding_strategy,
         document_repo=get_document_repository(),
         chunk_repo=get_chunk_repository(),
         vector_repo=_get_vector_repo(),
         search_repo=_get_search_repo(),
+        intelligence_recorder=DocumentIntelligenceRecorder(get_intelligence_repository()),
     )

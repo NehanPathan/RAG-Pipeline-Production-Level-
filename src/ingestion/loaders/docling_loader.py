@@ -1,8 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
-from src.ingestion.loaders.base import DocumentLoader, ImageRef, RawDocument, TableBlock, TextBlock
+from src.ingestion.loaders.base import (
+    BoundingBox,
+    DocumentLoader,
+    ImageRef,
+    RawDocument,
+    TableBlock,
+    TextBlock,
+)
 from src.monitoring.logger import get_logger
 
 logger = get_logger(__name__)
@@ -26,6 +34,17 @@ class DoclingLoader(DocumentLoader):
         return mime_type in SUPPORTED_MIMES or file_extension.lower() in SUPPORTED_EXTENSIONS
 
     async def load(self, file_path: Path) -> RawDocument:
+        # `converter.convert()` is a synchronous, CPU-bound call (Docling's
+        # own layout/table/OCR model inference, often 30-90+ seconds for a
+        # real PDF) -- run via `asyncio.to_thread` so it doesn't block the
+        # event loop for its entire duration. Previously ran directly on the
+        # event loop; with only one uvicorn worker (see docker/api.Dockerfile),
+        # that froze the *entire* API -- including unrelated health checks
+        # and other requests -- for as long as this took. Found during
+        # Phase 4A verification (docs/architecture/12_phase4a_design_review.md).
+        return await asyncio.to_thread(self._parse, file_path)
+
+    def _parse(self, file_path: Path) -> RawDocument:
         from docling.document_converter import DocumentConverter
 
         logger.info("docling_load_start", file=str(file_path))
@@ -38,25 +57,35 @@ class DoclingLoader(DocumentLoader):
         tables: list[TableBlock] = []
         image_refs: list[ImageRef] = []
 
-        # Extract text by page. `doc.pages` is keyed by page number and holds
-        # only page geometry (size/image) — the actual text content lives in
-        # the flat `doc.texts` list, with each item's page number coming from
-        # its first provenance entry.
-        page_text_parts: dict[int, list[str]] = {page_no: [] for page_no in doc.pages}
+        # One TextBlock per Docling text item (not merged per page) so each
+        # item's structural label ("section_header"/"list_item"/"caption"/
+        # "footnote"/"title"/etc, from docling_core's DocItemLabel) and, for
+        # headings, its level survive into the pipeline instead of being
+        # discarded -- this is what LayoutAnalyzer (src/ingestion/layout/)
+        # reads to build real document structure (see Gap 1,
+        # docs/architecture/12_phase4a_design_review.md). `doc.pages` is
+        # keyed by page number and holds only page geometry (size/image);
+        # the text content itself lives in the flat `doc.texts` list, with
+        # each item's page number coming from its first provenance entry.
         for item in doc.texts:
             if not item.text or not item.prov:
                 continue
-            page_text_parts.setdefault(item.prov[0].page_no, []).append(item.text)
-
-        for page_no in sorted(page_text_parts):
-            parts = page_text_parts[page_no]
-            if parts:
-                text_blocks.append(
-                    TextBlock(
-                        text="\n".join(parts),
-                        page_number=page_no,
+            prov = item.prov[0]
+            label = item.label.value if hasattr(item.label, "value") else str(item.label)
+            text_blocks.append(
+                TextBlock(
+                    text=item.text,
+                    page_number=prov.page_no,
+                    element_label=label,
+                    heading_level=getattr(item, "level", None),
+                    is_footnote=(label == "footnote"),
+                    bbox=BoundingBox(
+                        x0=prov.bbox.l, y0=prov.bbox.t, x1=prov.bbox.r, y1=prov.bbox.b
                     )
+                    if getattr(prov, "bbox", None)
+                    else None,
                 )
+            )
 
         # Extract tables
         for table in doc.tables:
