@@ -6,10 +6,10 @@ from src.ingestion.loaders.base import BoundingBox
 
 __all__ = [
     "BoundingBox",
-    "OCRWord",
+    "OCRMetadata",
     "OCRPageResult",
     "OCRResult",
-    "OCRMetadata",
+    "OCRWord",
 ]
 
 

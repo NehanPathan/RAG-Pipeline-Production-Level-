@@ -3,10 +3,10 @@ from logging.config import fileConfig
 
 from alembic import context
 from sqlalchemy import pool
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.ext.asyncio import create_async_engine
 
-from src.infrastructure.database.postgres.connection import Base
 import src.infrastructure.database.postgres.models  # noqa: F401 — register all models
+from src.infrastructure.database.postgres.connection import Base
 
 config = context.config
 if config.config_file_name is not None:

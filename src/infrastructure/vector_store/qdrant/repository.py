@@ -24,7 +24,14 @@ logger = get_logger(__name__)
 # creation but forgotten in the backfill would full-scan forever on any
 # deployment that already had the collection -- correct results, silently
 # terrible latency, and nothing in the logs to say so.
-INDEXED_PAYLOAD_FIELDS = ("user_id", "domain", "tags", "file_type", "sensitivity")
+INDEXED_PAYLOAD_FIELDS = (
+    "user_id",
+    "domain",
+    "tags",
+    "file_type",
+    "sensitivity",
+    "entity_canonicals",
+)
 
 
 class QdrantVectorRepository(VectorRepository):

@@ -7,6 +7,7 @@ from src.ingestion.chunkers.chunk_validator import ChunkValidator
 from src.ingestion.chunkers.parent_child_chunker import ParentChildChunker
 from src.ingestion.chunkers.semantic_chunker import SemanticChunker, SemanticSegment
 from src.ingestion.chunkers.structure_chunker import StructureChunker
+from src.ingestion.extractors.regex_extractor import RegexSteelEntityExtractor
 from src.ingestion.parsing.parsed_document import ParsedDocument
 from src.monitoring.logger import get_logger
 
@@ -37,11 +38,16 @@ class HybridChunkingPipeline:
         semantic_chunker: SemanticChunker,
         parent_child_chunker: ParentChildChunker,
         validator: ChunkValidator,
+        entity_extractor: RegexSteelEntityExtractor | None = None,
     ) -> None:
         self._structure_chunker = structure_chunker
         self._semantic_chunker = semantic_chunker
         self._parent_child_chunker = parent_child_chunker
         self._validator = validator
+        # Only the deterministic pass runs per chunk: it has no I/O and no
+        # token cost, and char offsets only mean anything relative to the
+        # text they were found in -- which is the chunk, not the document.
+        self._entity_extractor = entity_extractor
 
     async def chunk(self, document_id: uuid.UUID, parsed_document: ParsedDocument) -> list[DocumentChunk]:
         sections = self._structure_chunker.split(parsed_document)
@@ -68,6 +74,8 @@ class HybridChunkingPipeline:
             all_chunks.extend(section_chunks)
             position += len(section_chunks)
 
+        self._attach_entities(all_chunks)
+
         ocr_metadata = parsed_document.ocr_metadata
         ocr_confidence = ocr_metadata.confidence if ocr_metadata.ran else None
         result = self._validator.validate(
@@ -85,6 +93,21 @@ class HybridChunkingPipeline:
             chunks_rejected=len(result.rejected),
         )
         return result.valid
+
+    def _attach_entities(self, chunks: list[DocumentChunk]) -> None:
+        """Record the steel entities each chunk actually contains.
+
+        Surfaced as `entity_canonicals` on the chunk payload in both search
+        backends, which turns "which chunks mention ISMB 300" into an exact
+        keyword filter rather than a semantic guess -- and gives BM25 a term
+        to match on for a query that is mostly a part number.
+        """
+        if self._entity_extractor is None:
+            return
+        for chunk in chunks:
+            result = self._entity_extractor.extract_sync(chunk.content)
+            if result.entities:
+                chunk.chunk_metadata.entities = [e.to_dict() for e in result.entities]
 
     def _is_drawing(self, parsed_document: ParsedDocument) -> bool:
         """Whether this document should be validated against the drawing OCR floor.

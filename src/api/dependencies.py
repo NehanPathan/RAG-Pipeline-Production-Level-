@@ -33,7 +33,9 @@ from src.ingestion.chunkers.structure_chunker import StructureChunker
 from src.ingestion.embedders.base import EmbeddingProvider
 from src.ingestion.embedders.embedding_strategy import EmbeddingStrategy
 from src.ingestion.embedders.registry import get_embedding_provider
+from src.ingestion.enrichers.domain_enricher import DomainMetadataEnricher
 from src.ingestion.enrichers.llm_enricher import LLMMetadataEnricher
+from src.ingestion.extractors.regex_extractor import RegexSteelEntityExtractor
 from src.ingestion.layout.heuristic_layout_analyzer import HeuristicLayoutAnalyzer
 from src.ingestion.layout.labeled_layout_analyzer import LabeledLayoutAnalyzer
 from src.ingestion.loaders.docling_loader import DoclingLoader
@@ -400,6 +402,13 @@ def _build_ingestion_pipeline() -> IngestionPipeline:
         retrieval_provider=_get_embedder(),
     )
 
+    # One extractor instance for both the document-level enricher and the
+    # per-chunk pass: it compiles ~40 patterns and parses the gazetteer, and
+    # there is no per-document state to keep them apart.
+    entity_extractor = (
+        RegexSteelEntityExtractor() if settings.steel_entity_extraction_enabled else None
+    )
+
     hybrid_chunking_pipeline: ChunkingStrategy = HybridChunkingPipeline(
         structure_chunker=StructureChunker(),
         semantic_chunker=SemanticChunker(
@@ -411,7 +420,9 @@ def _build_ingestion_pipeline() -> IngestionPipeline:
         validator=ChunkValidator(
             min_chars=settings.chunk_validator_min_chars,
             min_ocr_confidence=settings.chunk_validator_min_ocr_confidence,
+            min_ocr_confidence_drawing=settings.chunk_validator_min_ocr_confidence_drawing,
         ),
+        entity_extractor=entity_extractor,
     )
 
     parsing_service = DocumentParsingService(
@@ -423,7 +434,15 @@ def _build_ingestion_pipeline() -> IngestionPipeline:
 
     return IngestionPipeline(
         loaders=[DoclingLoader(), ImagePassthroughLoader(), UnstructuredLoader()],
-        enricher=LLMMetadataEnricher(small_llm),
+        enricher=(
+            DomainMetadataEnricher(
+                LLMMetadataEnricher(small_llm),
+                extractor=entity_extractor,
+                max_chars=settings.steel_entity_max_chars,
+            )
+            if entity_extractor is not None
+            else LLMMetadataEnricher(small_llm)
+        ),
         parsing_service=parsing_service,
         chunking_strategy=hybrid_chunking_pipeline,
         embedding_strategy=embedding_strategy,

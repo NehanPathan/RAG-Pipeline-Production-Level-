@@ -45,7 +45,23 @@ def chunk_to_payload(chunk: DocumentChunk) -> dict[str, Any]:
         "file_type": chunk.file_type,
         "document_name": chunk.document_name,
         "sensitivity": chunk.sensitivity.value,
+        # Canonical forms only, as a flat keyword list. The full entity
+        # records (provenance, attributes, confidence) stay in Postgres --
+        # what a search backend needs is something exactly matchable, and
+        # indexing nested objects per chunk would cost far more than it
+        # returns.
+        "entity_canonicals": _entity_canonicals(chunk),
     }
+
+
+def _entity_canonicals(chunk: DocumentChunk) -> list[str]:
+    return sorted(
+        {
+            str(entity["canonical"])
+            for entity in chunk.chunk_metadata.entities
+            if entity.get("canonical")
+        }
+    )
 
 
 def payload_to_chunk(payload: Mapping[str, Any], chunk_id: uuid.UUID) -> DocumentChunk:

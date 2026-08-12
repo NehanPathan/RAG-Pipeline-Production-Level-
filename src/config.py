@@ -90,6 +90,18 @@ class Settings(BaseSettings):
     bge_embedding_dimensions: int = 1024
     e5_embedding_dimensions: int = 1024
 
+    # Steel-domain entity extraction (src/ingestion/extractors/).
+    #
+    # Deterministic regex + gazetteer, run at document level by
+    # DomainMetadataEnricher and again per chunk during chunking. No model
+    # download, no inference, no per-document API call -- so the only reason
+    # to switch it off is to process a corpus that is not steel.
+    steel_entity_extraction_enabled: bool = True
+    # Bounds worst-case CPU on a pathological document. Unlike the LLM
+    # enricher's 2000-char window this is not about token cost, so it is
+    # generous: the extractor should see the schedules, not just page one.
+    steel_entity_max_chars: int = 40_000
+
     # Reranking
     reranker_provider: str = "bge"
     bge_reranker_model: str = "BAAI/bge-reranker-large"
@@ -120,6 +132,11 @@ class Settings(BaseSettings):
     semantic_chunk_min_sentences: int = 3
     chunk_validator_min_chars: int = 10
     chunk_validator_min_ocr_confidence: float = 0.35
+    # Engineering drawings OCR at 0.30-0.50 on average -- rotated dimension
+    # text, hatching and leader lines -- so the prose floor discards every
+    # chunk of a perfectly usable sheet. Applied only to documents whose text
+    # came wholly from OCR of an image.
+    chunk_validator_min_ocr_confidence_drawing: float = 0.15
 
     # Query Intelligence
     query_expansion_count: int = 3

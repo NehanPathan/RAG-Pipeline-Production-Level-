@@ -11,7 +11,7 @@ from src.domain.repositories.search_repository import SearchRepository
 from src.domain.repositories.vector_repository import VectorRepository
 from src.ingestion.chunkers.chunking_strategy import ChunkingStrategy
 from src.ingestion.embedders.embedding_strategy import EmbeddingStrategy
-from src.ingestion.enrichers.llm_enricher import LLMMetadataEnricher
+from src.ingestion.enrichers.metadata_enricher import MetadataEnricher
 from src.ingestion.loaders.base import DocumentLoader
 from src.ingestion.parsing.parsed_document import ParsedDocument
 from src.ingestion.parsing.parsing_orchestrator import DocumentParsingService
@@ -59,7 +59,7 @@ class IngestionPipeline:
     def __init__(
         self,
         loaders: list[DocumentLoader],
-        enricher: LLMMetadataEnricher,
+        enricher: MetadataEnricher,
         parsing_service: DocumentParsingService,
         chunking_strategy: ChunkingStrategy,
         embedding_strategy: EmbeddingStrategy,

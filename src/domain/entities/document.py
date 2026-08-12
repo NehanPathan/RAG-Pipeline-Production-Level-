@@ -101,6 +101,12 @@ class ChunkMetadata:
     semantic_cluster: int | None = None
     ocr_confidence: float | None = None
     language: str | None = None
+    # Steel-domain entities found in this chunk's own text (see
+    # src/ingestion/extractors/). Their canonical forms are denormalised onto
+    # the search payloads as `entity_canonicals`, which is what turns "which
+    # chunks mention ISMB 300" into an exact keyword filter rather than a
+    # semantic guess.
+    entities: list[dict] = field(default_factory=list)
 
 
 @dataclass

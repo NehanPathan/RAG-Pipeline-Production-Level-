@@ -27,7 +27,15 @@ class LLMMetadataEnricher:
     def __init__(self, llm_provider) -> None:
         self._llm = llm_provider
 
-    async def enrich(self, content: str, file_name: str) -> DocumentMetadata:
+    async def enrich(
+        self,
+        content: str,
+        file_name: str,
+        parsed_document: object | None = None,
+    ) -> DocumentMetadata:
+        # `parsed_document` is accepted and ignored: it is part of the
+        # MetadataEnricher protocol so a domain enricher can use layout and
+        # OCR data, and this one works from raw text alone.
         truncated = content[:2000]
         prompt = ENRICH_PROMPT.format(content=truncated)
 

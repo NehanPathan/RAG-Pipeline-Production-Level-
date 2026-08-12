@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Callable, Iterable
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any
 
 from src.ingestion.ocr.base import OCRProvider
 from src.ingestion.ocr.models import BoundingBox, OCRPageResult, OCRResult, OCRWord

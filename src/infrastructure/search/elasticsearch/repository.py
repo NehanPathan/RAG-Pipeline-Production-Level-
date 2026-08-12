@@ -39,6 +39,7 @@ INDEX_MAPPINGS: dict[str, Any] = {
             "chunk_type": {"type": "keyword"},
             "parent_chunk_id": {"type": "keyword"},
             "sensitivity": {"type": "keyword"},
+            "entity_canonicals": {"type": "keyword"},
         }
     },
     "settings": {
