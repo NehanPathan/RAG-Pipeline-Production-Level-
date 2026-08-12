@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -68,7 +68,7 @@ async def rolling_averages(
     blob whose key set is intentionally open — adding a new judge metric
     should not require a schema change or a new query.
     """
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=window_hours)
+    cutoff = datetime.now(UTC) - timedelta(hours=window_hours)
     async with session_factory() as session:
         result = await session.execute(
             select(OnlineEvalSampleModel.scores).where(
@@ -116,7 +116,7 @@ async def save_feedback(
 async def feedback_summary(
     session_factory: async_sessionmaker[AsyncSession], window_hours: int = 168
 ) -> dict:
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=window_hours)
+    cutoff = datetime.now(UTC) - timedelta(hours=window_hours)
     async with session_factory() as session:
         result = await session.execute(
             select(

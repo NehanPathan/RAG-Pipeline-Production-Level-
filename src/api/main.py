@@ -3,10 +3,9 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
-from starlette.requests import Request
 from starlette.responses import Response
 
 from src.api.dependencies import (
@@ -32,6 +31,7 @@ from src.governance.rbac import DEFAULT_USER_ID
 from src.governance.runtime_flags import get_flags
 from src.infrastructure.database.postgres.connection import get_engine, get_session_factory
 from src.infrastructure.database.postgres.models import Base, UserModel
+from src.monitoring.langsmith import configure_langsmith
 from src.monitoring.logger import configure_logging, get_logger
 from src.monitoring.prometheus_metrics import policy_info
 from src.monitoring.tracing import configure_tracing, instrument_fastapi
@@ -57,6 +57,13 @@ async def lifespan(app: FastAPI):
         )
     else:
         logger.warning("tracing_disabled_no_otlp_endpoint")
+
+    # LangChain exports traces to LangSmith purely on the presence of
+    # environment variables. Left alone, an API key set for an evaluation run
+    # would silently start shipping prompt text and retrieved document
+    # content off-network. The decision is therefore made explicitly here, in
+    # both directions.
+    configure_langsmith(settings)
 
     # GOVERN: load and publish the policy in force, so `rag_policy_info`
     # tells a dashboard which rules were active during any time window.
