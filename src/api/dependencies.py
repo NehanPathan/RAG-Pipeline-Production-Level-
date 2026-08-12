@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from src.config import get_settings
 from src.evaluation.online.feedback import FeedbackService
 from src.evaluation.online.sampler import OnlineEvaluator
@@ -24,6 +26,8 @@ from src.infrastructure.vector_store.qdrant.repository import (
     QdrantVectorRepository,
     create_qdrant_client,
 )
+from src.ingestion.cad.dxf_reader import DxfReader
+from src.ingestion.cad.registry import get_dwg_converter
 from src.ingestion.chunkers.chunk_validator import ChunkValidator
 from src.ingestion.chunkers.chunking_strategy import ChunkingStrategy
 from src.ingestion.chunkers.hybrid_chunking_pipeline import HybridChunkingPipeline
@@ -39,6 +43,7 @@ from src.ingestion.extractors.regex_extractor import RegexSteelEntityExtractor
 from src.ingestion.layout.heuristic_layout_analyzer import HeuristicLayoutAnalyzer
 from src.ingestion.layout.labeled_layout_analyzer import LabeledLayoutAnalyzer
 from src.ingestion.loaders.docling_loader import DoclingLoader
+from src.ingestion.loaders.dxf_loader import DxfLoader
 from src.ingestion.loaders.image_loader import ImagePassthroughLoader
 from src.ingestion.loaders.unstructured_loader import UnstructuredLoader
 from src.ingestion.ocr.detector import OCRDetector
@@ -433,7 +438,25 @@ def _build_ingestion_pipeline() -> IngestionPipeline:
     )
 
     return IngestionPipeline(
-        loaders=[DoclingLoader(), ImagePassthroughLoader(), UnstructuredLoader()],
+        # DxfLoader before ImagePassthroughLoader: DXF's registered mime type
+        # starts with `image/`, and loader selection takes the first match.
+        loaders=[
+            DoclingLoader(),
+            DxfLoader(
+                reader=DxfReader(
+                    max_entities=settings.cad_max_entities,
+                    ignored_layers=tuple(
+                        layer.strip().upper()
+                        for layer in settings.cad_ignored_layers.split(",")
+                        if layer.strip()
+                    ),
+                ),
+                converter=get_dwg_converter(settings),
+                work_dir=Path(settings.derived_assets_dir),
+            ),
+            ImagePassthroughLoader(),
+            UnstructuredLoader(),
+        ],
         enricher=(
             DomainMetadataEnricher(
                 LLMMetadataEnricher(small_llm),

@@ -11,6 +11,13 @@ class BoundingBox:
     y0: float
     x1: float
     y1: float
+    # Which coordinate system these numbers are in. Page space (the default)
+    # is bounded and Y-down, as PDF and image coordinates are. CAD model
+    # space is unbounded, Y-up, and in drawing units that may be metres --
+    # a rectangle from one interpreted as the other lands nowhere near the
+    # thing it describes, so the space travels with the box rather than being
+    # inferred by whoever reads it.
+    space: str = "page"
 
 
 @dataclass

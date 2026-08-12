@@ -197,6 +197,8 @@ class IngestionPipeline:
             "txt": "text/plain",
             "md": "text/markdown",
             "html": "text/html",
+            "dxf": "image/vnd.dxf",
+            "dwg": "image/vnd.dwg",
             "png": "image/png",
             "jpg": "image/jpeg",
             "jpeg": "image/jpeg",

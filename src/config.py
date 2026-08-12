@@ -1,5 +1,4 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field
 
 
 class Settings(BaseSettings):
@@ -102,6 +101,23 @@ class Settings(BaseSettings):
     # generous: the extractor should see the schedules, not just page one.
     steel_entity_max_chars: int = 40_000
 
+    # CAD ingestion (src/ingestion/cad/).
+    #
+    # DXF works out of the box via ezdxf. DWG needs the ODA File Converter,
+    # which the operator installs themselves: ODA's licence grants free use
+    # but not redistribution, so the binary cannot ship in our image. With no
+    # converter configured, a DWG upload is rejected with a message telling
+    # the user to export DXF, rather than failing inside a CAD library.
+    cad_dwg_converter: str = "none"  # none | oda
+    cad_oda_converter_path: str = "/opt/ODAFileConverter/ODAFileConverter"
+    cad_dwg_conversion_timeout_seconds: float = 120.0
+    cad_max_entities: int = 500_000
+    # Construction geometry that never plots, so its text must not become
+    # searchable content. DEFPOINTS is AutoCAD's dimension-definition layer.
+    cad_ignored_layers: str = "DEFPOINTS"
+    # Where DWG->DXF output and other derived artifacts are written.
+    derived_assets_dir: str = "./uploads/derived"
+
     # Reranking
     reranker_provider: str = "bge"
     bge_reranker_model: str = "BAAI/bge-reranker-large"
@@ -112,7 +128,7 @@ class Settings(BaseSettings):
     default_loader: str = "docling"
     llamaparse_api_key: str = ""
     max_file_size_mb: int = 100
-    allowed_file_types: str = "pdf,docx,txt,md,html,png,jpg,jpeg,tiff,bmp"
+    allowed_file_types: str = "pdf,docx,txt,md,html,png,jpg,jpeg,tiff,bmp,dxf,dwg"
 
     # OCR
     ocr_provider: str = "tesseract"  # tesseract | paddle | baidu_unlimited

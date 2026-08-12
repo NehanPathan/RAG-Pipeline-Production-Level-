@@ -46,6 +46,20 @@ dependencies = [
     # conflict as previously assumed here.
     "pdf2image>=1.17.0",
 
+    # CAD. ezdxf reads DXF natively (MIT, cp312 wheels for Windows and
+    # manylinux, pure-Python fallback). It cannot read DWG -- that needs the
+    # ODA File Converter, which the operator installs themselves because
+    # ODA's licence grants free use but not redistribution, so the binary
+    # cannot be baked into an image we publish. See src/ingestion/cad/.
+    #
+    # matplotlib is ezdxf's rendering backend. It is already resolved
+    # transitively via unstructured-inference and its system libraries are
+    # already in docker/api.Dockerfile; declared here because we import it
+    # directly, and a direct import on a transitive dependency breaks the day
+    # that dependency drops it.
+    "ezdxf>=1.3,<2",
+    "matplotlib>=3.9",
+
     # Embeddings / Reranking
     "openai>=1.56.0",
     "sentence-transformers>=3.3.0",
