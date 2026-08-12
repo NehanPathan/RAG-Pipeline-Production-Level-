@@ -217,13 +217,6 @@ tool_latency = Histogram(
     registry=registry,
 )
 
-workflow_nodes = Counter(
-    "rag_workflow_node_executions_total",
-    "Workflow node executions",
-    ["workflow", "node", "outcome"],
-    registry=registry,
-)
-
 # ------------------------------------------------------------ ai gateway
 
 gateway_requests = Counter(

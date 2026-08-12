@@ -7,28 +7,25 @@ from dataclasses import dataclass, field
 
 from src.domain.repositories.search_repository import BM25ScoredChunk
 from src.domain.repositories.vector_repository import ScoredChunk
+from src.domain.value_objects.context_bundle import CompressedChunk
 from src.domain.value_objects.processed_query import ProcessedQuery
 from src.domain.value_objects.retrieval_candidate import FusedChunk, RerankedChunk
 from src.domain.value_objects.retrieval_trace import RetrievalTrace
-from src.domain.value_objects.context_bundle import CompressedChunk
 from src.domain.value_objects.sensitivity import Sensitivity
 from src.governance.audit import AuditAction, AuditOutcome
 from src.governance.audit import record as audit_record
 from src.governance.pii import get_question_redactor, get_redactor
 from src.governance.policy import AIPolicy, get_policy
 from src.governance.rbac import Principal, anonymous_principal
-from src.governance.runtime_flags import get_flags
 from src.governance.sensitivity_guard import SensitivityGuard
 from src.llm.providers.base import LLMProvider
 from src.monitoring.logger import get_logger
 from src.monitoring.prometheus_metrics import (
     answers_total,
     chunks_retrieved,
-    citation_validation,
     query_latency,
     retrieval_empty,
     retrieval_filter_fallback,
-    semantic_cache_lookups,
 )
 from src.monitoring.tracing import get_current_trace_id
 from src.retrieval.agents.query_agent import QueryAgent
@@ -36,10 +33,11 @@ from src.retrieval.answer.answer_pipeline import AnswerPipeline
 from src.retrieval.cache.semantic_cache import SemanticCache
 from src.retrieval.context.context_processor import ContextProcessor
 from src.retrieval.fusers.fuser import Fuser
+from src.retrieval.graph.state import QueryState
 from src.retrieval.hybrid_retriever import HybridRetriever
 from src.retrieval.rerankers.base import Reranker
 from src.routing.router import QueryRouter
-from src.routing.routes import Route, RouteDecision, RouteSource
+from src.routing.routes import Route, RouteDecision
 
 logger = get_logger(__name__)
 
@@ -135,6 +133,15 @@ class QueryPipeline:
         self._redact_answers = settings.governance_pii_redact_answers
         self._redact_questions = settings.governance_pii_redact_questions
 
+        # Built last: the graph closes over this instance, so every component
+        # above must already be assigned.
+        from src.retrieval.graph import build_query_graph
+
+        self._graph = build_query_graph(self)
+
+    def _general_knowledge_prompt(self, query: str) -> str:
+        return _GENERAL_KNOWLEDGE_PROMPT.format(query=query)
+
     async def inspect(
         self,
         query: str,
@@ -189,277 +196,29 @@ class QueryPipeline:
         user_id: uuid.UUID | None = None,
         principal: Principal | None = None,
     ) -> AsyncIterator[dict]:
-        principal = principal or anonymous_principal()
-        trace_id = get_current_trace_id()
-        start = time.perf_counter()
+        """Run the query graph, forwarding its custom stream as SSE events.
 
-        flags = await get_flags()
-        if not flags.answering_enabled:
-            # MANAGE: an operator has stopped answering. Return the refusal
-            # as a normal `done` event rather than an error so clients render
-            # it as a message instead of a failed request.
-            answers_total.labels(outcome="disabled").inc()
-            logger.warning("answering_disabled_by_kill_switch", trace_id=trace_id)
-            yield {
-                "type": "done",
-                "answer": "Answering is temporarily disabled by an administrator.",
-                "citations": [],
-                "cached": False,
-                "trace_id": trace_id,
-                "refused": True,
-                "refusal_reason": "kill_switch",
-            }
-            return
+        The control flow -- kill switch, cache, routing, retrieval, context,
+        grounding checks, generation, cache store, and the fallback from a
+        failed tool back into full retrieval -- lives in
+        `src/retrieval/graph/`. It used to be five async generators
+        delegating to one another with early returns at eight points; the
+        behaviour is unchanged, but the branching is now edges you can read
+        in one place.
 
-        if flags.semantic_cache_enabled:
-            cached = await self._semantic_cache.lookup(query)
-            semantic_cache_lookups.labels(result="hit" if cached else "miss").inc()
-            if cached is not None:
-                answers_total.labels(outcome="cached").inc()
-                query_latency.labels(intent="cached", provider="cache").observe(
-                    time.perf_counter() - start
-                )
-                yield {
-                    "type": "done",
-                    "answer": cached.answer,
-                    "citations": cached.citations,
-                    "cached": True,
-                    "trace_id": trace_id,
-                    "route": "cached",
-                    "route_source": "cache",
-                    # A cached answer is grounded only if it carried citations
-                    # when it was stored -- a cached tool answer did not.
-                    "grounded": bool(cached.citations),
-                    "refused": False,
-                    "context_texts": [],
-                }
-                return
-        else:
-            semantic_cache_lookups.labels(result="disabled").inc()
-
-        # ROUTE: decide how to answer before paying to answer. Routes that
-        # need no documents never touch embedding, vector search, BM25,
-        # fusion, reranking or compression.
-        decision = (
-            await self._router.route(query)
-            if self._router is not None
-            else RouteDecision(
-                route=Route.RAG, source=RouteSource.FORCED, reason="no router configured"
-            )
-        )
-
-        if decision.route is not Route.RAG:
-            async for event in self._answer_off_pipeline(
-                query, decision, principal, trace_id, start, flags
-            ):
-                yield event
-            return
-
-        async for event in self._answer_via_rag(query, principal, trace_id, start, flags, user_id):
-            yield event
-
-    async def _answer_via_rag(
-        self,
-        query: str,
-        principal: Principal,
-        trace_id: str,
-        start: float,
-        flags,
-        user_id: uuid.UUID | None = None,
-    ) -> AsyncIterator[dict]:
-        """The full retrieval pipeline: Modules A–G under the grounding policy.
-
-        Extracted from `answer()` so the router can reach it as a fallback
-        when a tool it selected turns out to be unavailable — the user should
-        get an answer, not the router's misjudgement.
+        `stream_mode="custom"` carries exactly the dicts the nodes write, so
+        the event contract the chat route and the UI consume is untouched.
         """
-        inspection = await self._retrieve(query, user_id, principal)
-        intent = inspection.processed_query.intent.type.value
-        provider = self._answer_pipeline.model_id
+        state: QueryState = {
+            "query": query,
+            "user_id": user_id,
+            "principal": principal or anonymous_principal(),
+            "trace_id": get_current_trace_id(),
+            "started_at": time.perf_counter(),
+        }
 
-        compressed_chunks, citations = await self._context_processor.process(
-            inspection.processed_query.rewritten_query, inspection.reranked_results
-        )
-
-        # MAP: scrub personal data from retrieved passages *before* they enter
-        # the prompt. Once a passage is in the prompt it has left the
-        # deployment, so redacting the answer alone would be too late.
-        compressed_chunks = self._redact_context(compressed_chunks)
-
-        # GOVERN (C-GOV-03): nothing retrieved means the model has no grounds
-        # to answer from. Checked *before* generation so an ungrounded answer
-        # is never produced -- and never billed for -- rather than generated
-        # and then suppressed.
-        pre_decision = self._policy.check_grounding(
-            context_chunks=len(compressed_chunks), valid_citations=0
-        )
-        if pre_decision.denied and pre_decision.control_id == "C-GOV-03":
-            async for event in self._refuse(pre_decision, trace_id, intent, provider, start):
-                yield event
-            return
-
-        answer_text = ""
-        citation_payload: list[dict] = []
-        errored = False
-
-        async for event in self._answer_pipeline.generate(
-            query=inspection.processed_query.rewritten_query,
-            chunks=compressed_chunks,
-            citations=citations,
-        ):
-            if event["type"] == "error":
-                errored = True
-                answers_total.labels(outcome="error").inc()
-                event["trace_id"] = trace_id
-                yield event
-                return
-
-            if event["type"] != "done":
-                yield event
-                continue
-
-            answer_text = event["answer"]
-            citation_payload = event["citations"]
-
-            # GOVERN (C-GOV-04): the answer exists but cites nothing that was
-            # retrieved. CitationValidator has already discarded fabricated
-            # markers, so an empty list here means the model either invented
-            # every citation or ignored the context entirely.
-            post_decision = self._policy.check_grounding(
-                context_chunks=len(compressed_chunks),
-                valid_citations=len(citation_payload),
-            )
-            if post_decision.denied:
-                citation_validation.labels(result="uncited_answer").inc()
-                if self._policy.enforcing:
-                    async for refusal in self._refuse(
-                        post_decision, trace_id, intent, provider, start
-                    ):
-                        yield refusal
-                    return
-                # MONITOR mode: the violation is counted and audited, but the
-                # answer still ships. This is the intended rollout path for a
-                # new control -- watch the counter before enforcing.
-                await audit_record(
-                    action=AuditAction.POLICY_VIOLATION,
-                    actor_id=principal.user_id,
-                    actor_role=principal.role,
-                    resource_type="answer",
-                    outcome=AuditOutcome.ALLOWED,
-                    reason=post_decision.reason,
-                    control_id=post_decision.control_id,
-                )
-            else:
-                citation_validation.labels(result="valid").inc()
-
-            # Second redaction pass: catches personal data the model
-            # reconstructed or carried in from conversation history, which
-            # context redaction cannot reach.
-            event["answer"] = answer_text = self._redact_answer(answer_text)
-            event["trace_id"] = trace_id
-            event["refused"] = False
-            event["route"] = Route.RAG.value
-            event["grounded"] = True
-            # The redacted question, so the caller persists what was actually
-            # sent rather than the raw text it received.
-            event["question"] = query
-            # Internal-only key: the exact text the model was grounded on.
-            # The online judge needs it to score faithfulness, and the
-            # message row needs it for the audit trail. The chat route pops
-            # it before serialising, so it never inflates the SSE payload.
-            event["context_texts"] = [c.compressed_content for c in compressed_chunks]
+        async for event in self._graph.astream(state, stream_mode="custom"):
             yield event
-
-            answers_total.labels(outcome="served").inc()
-            if flags.semantic_cache_enabled:
-                await self._semantic_cache.store(
-                    query,
-                    answer_text,
-                    citation_payload,
-                    model_used=event.get("model_used", ""),
-                )
-
-        if not errored:
-            query_latency.labels(intent=intent, provider=provider).observe(
-                time.perf_counter() - start
-            )
-
-    async def _answer_off_pipeline(
-        self,
-        query: str,
-        decision: RouteDecision,
-        principal: Principal,
-        trace_id: str,
-        start: float,
-        flags,
-    ) -> AsyncIterator[dict]:
-        """Answer a query the router sent somewhere other than RAG.
-
-        Every branch emits the same `done` event shape the RAG path does, so
-        the chat route, the UI and the online evaluator need no special
-        casing for routed answers.
-        """
-        route = decision.route
-
-        if route is Route.REFUSE:
-            answers_total.labels(outcome="refused").inc()
-            yield self._done(
-                "I need an actual question to answer.",
-                decision,
-                trace_id,
-                refused=True,
-            )
-            return
-
-        if route is Route.GREETING:
-            # Zero model calls, zero retrieval. The cheapest possible answer
-            # to the most common non-question in real traffic.
-            answers_total.labels(outcome="served").inc()
-            query_latency.labels(intent="greeting", provider="none").observe(
-                time.perf_counter() - start
-            )
-            yield self._done(
-                str(decision.args.get("reply") or "Hello."), decision, trace_id
-            )
-            return
-
-        if route is Route.LLM_KNOWLEDGE:
-            async for event in self._answer_from_model(query, decision, trace_id, start):
-                yield event
-            return
-
-        tool_name = route.tool_name
-        if not tool_name:
-            logger.error("route_has_no_handler", route=route.value)
-            answers_total.labels(outcome="error").inc()
-            yield {
-                "type": "error",
-                "code": "unroutable",
-                "message": f"No handler for route {route.value}.",
-                "trace_id": trace_id,
-            }
-            return
-
-        result = await self._run_tool(tool_name, query, decision, principal, trace_id)
-        if not result.succeeded:
-            # A tool failure falls through to the full pipeline rather than
-            # surfacing an error: the router's guess was that a tool could
-            # answer this, and being wrong should cost latency, not an answer.
-            logger.info("tool_failed_falling_back_to_rag", tool=tool_name, error=result.error)
-            async for event in self._answer_via_rag(query, principal, trace_id, start, flags):
-                yield event
-            return
-
-        answer = self._redact_answer(result.answer)
-        answers_total.labels(outcome="served").inc()
-        query_latency.labels(intent=route.value, provider=tool_name).observe(
-            time.perf_counter() - start
-        )
-
-        if result.cacheable and flags.semantic_cache_enabled:
-            await self._semantic_cache.store(query, answer, result.citations, model_used=tool_name)
-
-        yield self._done(answer, decision, trace_id, citations=result.citations)
 
     async def _run_tool(
         self,
@@ -483,48 +242,6 @@ class QueryPipeline:
                 query=query, principal=principal, args=dict(decision.args), trace_id=trace_id
             )
         )
-
-    async def _answer_from_model(
-        self, query: str, decision: RouteDecision, trace_id: str, start: float
-    ) -> AsyncIterator[dict]:
-        """General knowledge: one model call, no retrieval, no citations.
-
-        The answer is explicitly marked as not document-sourced. Presenting
-        model knowledge with the same authority as a cited passage is exactly
-        the confusion a RAG system exists to prevent, so the distinction is
-        carried in the event rather than left to the reader.
-        """
-        if self._direct_llm is None:
-            logger.warning("direct_llm_unavailable_falling_back")
-            decision = RouteDecision(
-                route=Route.RAG, source=RouteSource.FALLBACK, reason="no direct LLM configured"
-            )
-            return
-
-        tokens: list[str] = []
-        try:
-            async for token in self._direct_llm.stream(
-                _GENERAL_KNOWLEDGE_PROMPT.format(query=query), max_tokens=800, temperature=0.3
-            ):
-                tokens.append(token)
-                yield {"type": "token", "content": token}
-        except Exception as exc:
-            answers_total.labels(outcome="error").inc()
-            logger.error("direct_llm_failed", error=str(exc))
-            yield {
-                "type": "error",
-                "code": "generation_failed",
-                "message": str(exc),
-                "trace_id": trace_id,
-            }
-            return
-
-        answer = self._redact_answer("".join(tokens))
-        answers_total.labels(outcome="served").inc()
-        query_latency.labels(
-            intent="llm_knowledge", provider=self._direct_llm.model_id
-        ).observe(time.perf_counter() - start)
-        yield self._done(answer, decision, trace_id, model_used=self._direct_llm.model_id)
 
     def _done(
         self,
