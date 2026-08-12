@@ -207,7 +207,7 @@ class LLMGateway(LLMProvider):
         """Estimate and record spend.
 
         Uses a 4-chars-per-token approximation. The provider reports exact
-        counts for its own metrics (see OpenAIProvider._record_usage); this
+        counts for its own metrics; this
         is the provider-agnostic estimate that makes cost comparable *across*
         providers, which is the number a fallback chain makes you care about.
         """

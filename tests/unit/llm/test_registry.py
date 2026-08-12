@@ -4,7 +4,7 @@ from src.config import Settings
 from src.governance.policy import reset_policy
 from src.llm.gateway import LLMGateway
 from src.llm.providers.base import LLMProvider
-from src.llm.providers.openai_provider import OpenAIProvider
+from src.llm.providers.langchain_provider import LangChainChatProvider
 from src.llm.registry import build_gateway, get_llm_provider, providers
 
 
@@ -46,7 +46,7 @@ class TestRoleSelection:
     def test_primary_of_the_chain_is_the_configured_provider(self, settings):
         gateway = build_gateway(settings, "small")
         assert gateway.primary.name == "openai"
-        assert isinstance(gateway.primary.provider, OpenAIProvider)
+        assert isinstance(gateway.primary.provider, LangChainChatProvider)
 
 
 class TestFallbackChain:

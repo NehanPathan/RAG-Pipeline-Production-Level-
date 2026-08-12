@@ -291,6 +291,20 @@ class Settings(BaseSettings):
     otel_exporter_otlp_endpoint: str = "http://localhost:4317"
     otel_service_name: str = "prod-rag-api"
 
+    # LangSmith -- evaluation only.
+    #
+    # Runtime tracing stays on Langfuse (self-hostable). LangSmith traces
+    # carry prompt text and retrieved document content, which for this system
+    # means the client's structural drawings; sending those to a third-party
+    # SaaS is a decision the deployer makes explicitly, not a default. So
+    # `langsmith_tracing` defaults to False and is the only thing that sets
+    # LANGCHAIN_TRACING_V2. Datasets and evaluators (see src/evaluation/)
+    # work independently of it.
+    langsmith_api_key: str = ""
+    langsmith_endpoint: str = "https://api.smith.langchain.com"
+    langsmith_project: str = "steel-doc-intelligence"
+    langsmith_tracing: bool = False
+
     # Streamlit
     api_base_url: str = "http://localhost:8000"
 

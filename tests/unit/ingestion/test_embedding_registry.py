@@ -11,6 +11,11 @@ from src.ingestion.embedders.registry import build_embedding_strategy, get_embed
 
 
 def _settings(**overrides) -> Settings:
+    # A dummy key is required, not incidental: the OpenAI client raises at
+    # construction when it can find no credentials anywhere. These tests are
+    # about which provider the registry selects, so they supply one rather
+    # than depending on the ambient environment having a real key.
+    overrides.setdefault("openai_api_key", "sk-test-not-a-real-key")
     return Settings(_env_file=None, **overrides)
 
 

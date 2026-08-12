@@ -58,9 +58,38 @@ dependencies = [
     "google-generativeai>=0.8.0",
     "ollama>=0.4.0",
 
+    # LangChain / LangGraph
+    #
+    # Replaces hand-rolled machinery that has a well-maintained equivalent:
+    # the provider registry and fallback chain (ChatModel + with_fallbacks),
+    # the embedding cache (CacheBackedEmbeddings), RRF fusion
+    # (EnsembleRetriever), reranking and context compression
+    # (ContextualCompressionRetriever), and -- the largest one -- the custom
+    # node-graph workflow engine plus the manually-wired query pipeline,
+    # which both become a single LangGraph StateGraph.
+    #
+    # It deliberately does NOT replace the governance layer (clearance
+    # pre/post-filters, RBAC, audit, PII redaction) or the observability
+    # stack, neither of which LangChain has an equivalent for.
+    "langchain>=0.3.0",
+    "langchain-core>=0.3.0",
+    "langgraph>=0.2.0",
+    "langchain-openai>=0.2.0",
+    "langchain-anthropic>=0.3.0",
+    "langchain-huggingface>=0.1.0",
+    "langchain-qdrant>=0.2.0",
+    "langchain-elasticsearch>=0.3.0",
+    "langchain-cohere>=0.3.0",
+    "langchain-text-splitters>=0.3.0",
+
     # Evaluation
-    "ragas>=0.2.0",
-    "deepeval>=1.4.0",
+    #
+    # LangSmith is used for datasets and evaluators only -- runtime tracing
+    # stays on Langfuse, which is self-hostable. Traces carry prompt text and
+    # retrieved document content, and client structural drawings must not
+    # leave the network by default. LANGCHAIN_TRACING_V2 is therefore off
+    # unless explicitly enabled (see Settings.langsmith_tracing).
+    "langsmith>=0.1.140",
 
     # Observability
     "langfuse>=2.0.0",
@@ -150,6 +179,15 @@ ignore = [
     # rather than a per-line noqa on every endpoint.
     "B008",
 ]
+
+[tool.ruff.lint.isort]
+# `src` is this project's own package, not a third-party one. Without this,
+# ruff's isort wants every `from src...` import merged into the third-party
+# block -- the opposite of how the entire codebase is written -- which is why
+# I001 accounted for roughly half of all lint errors on a clean checkout and
+# `ruff check` could never have passed. The `src = [...]` setting above tells
+# ruff where to *resolve* modules, not how to *classify* them.
+known-first-party = ["src"]
 
 [tool.mypy]
 python_version = "3.12"
