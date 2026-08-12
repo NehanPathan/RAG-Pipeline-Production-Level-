@@ -1,0 +1,272 @@
+# Alert rules for the GM3 governance controls.
+#
+# Every rule here corresponds to a risk in docs/governance/risk_register.yaml
+# and carries its risk id as a label, so an alert is traceable to the
+# documented risk it belongs to rather than arriving as free-floating noise.
+# `scripts/check_governance.py` fails CI if a risk with a threshold has no
+# matching rule.
+
+groups:
+  - name: rag-quality
+    interval: 30s
+    rules:
+      - alert: FaithfulnessBelowPolicyFloor
+        # The offline gauge is the authoritative quality number; it moves
+        # only when an evaluation run completes, so `for` is short --
+        # a stale-but-failing score is still a failing score.
+        expr: rag_evaluation_score{metric="faithfulness"} < 0.75
+        for: 5m
+        labels:
+          severity: critical
+          risk_id: R-T01
+          gm3_function: measure
+        annotations:
+          summary: "Offline faithfulness {{ $value | printf \"%.2f\" }} is below the 0.75 policy floor"
+          description: >-
+            Answers are drifting away from their retrieved context on dataset
+            {{ $labels.dataset }}. Check recent citation-validation failures and
+            whether the generator model or prompt changed.
+
+      - alert: OnlineFaithfulnessDegraded
+        # Live traffic, not the golden set. Fires when the observed mean over
+        # the last hour drops below the floor -- catches drift on real
+        # questions that the curated dataset does not represent.
+        expr: >-
+          (sum(rate(rag_online_eval_score_sum{metric="faithfulness"}[1h]))
+           / clamp_min(sum(rate(rag_online_eval_score_count{metric="faithfulness"}[1h])), 1)) < 0.75
+        for: 15m
+        labels:
+          severity: warning
+          # R-T05 (undetected drift), not R-T01: this rule watches the live
+          # judge score, which is R-T05's metric. R-T01 is watched by the
+          # citation-validation rule below.
+          risk_id: R-T05
+          gm3_function: measure
+        annotations:
+          summary: "Online faithfulness has fallen below the policy floor"
+
+      - alert: HallucinatedCitationsRising
+        # The clearest hallucination signal available: the model referenced a
+        # source that was never in its context.
+        expr: >-
+          sum(rate(rag_citation_validation_total{result="hallucinated_index"}[10m]))
+          / clamp_min(sum(rate(rag_citation_validation_total[10m])), 0.001) > 0.05
+        for: 10m
+        labels:
+          severity: critical
+          risk_id: R-T01
+          gm3_function: measure
+        annotations:
+          summary: "Over 5% of answers cite a source that was never retrieved"
+
+      - alert: RetrievalMissRateHigh
+        expr: >-
+          sum(rate(rag_retrieval_empty_total[15m]))
+          / clamp_min(sum(rate(rag_answers_total[15m])), 0.001) > 0.15
+        for: 15m
+        labels:
+          severity: warning
+          risk_id: R-T02
+          gm3_function: measure
+        annotations:
+          summary: "More than 15% of queries retrieve nothing"
+          description: >-
+            The corpus may no longer cover what users are asking, or the
+            classification filter may be excluding more than intended --
+            compare against rag_retrieval_blocked_chunks_total.
+
+  - name: rag-governance
+    interval: 30s
+    rules:
+      - alert: PolicyViolationsSpiking
+        expr: sum by (control_id) (rate(rag_policy_violations_total[10m])) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+          risk_id: R-G01
+          gm3_function: govern
+        annotations:
+          summary: "Control {{ $labels.control_id }} is failing repeatedly"
+
+      - alert: AuditTrailWriteFailing
+        # An audit trail with holes is worse than a missing one, because it
+        # looks complete. This is the only signal that it has holes.
+        expr: sum(rate(rag_audit_events_total{outcome="write_failed"}[5m])) > 0
+        for: 5m
+        labels:
+          severity: critical
+          risk_id: R-G02
+          gm3_function: govern
+        annotations:
+          summary: "Audit entries are failing to persist — the trail is incomplete"
+
+      - alert: ClearanceFilterLeakDetected
+        # SensitivityGuard should never have anything to drop: the backend
+        # pre-filters run first. A non-zero rate means one of them is not
+        # applying the allow-list.
+        expr: sum(rate(rag_retrieval_blocked_chunks_total[10m])) > 0
+        for: 10m
+        labels:
+          severity: critical
+          risk_id: R-S01
+          gm3_function: map
+        annotations:
+          summary: "Post-retrieval guard is dropping chunks the pre-filter should have excluded"
+
+      - alert: EnforcementModeIsMonitor
+        # Not an outage — a reminder. Monitor mode is meant to be temporary,
+        # and a policy left in it indefinitely enforces nothing.
+        expr: rag_policy_info{enforcement_mode="monitor"} == 1
+        for: 24h
+        labels:
+          severity: info
+          risk_id: R-G01
+          gm3_function: govern
+        annotations:
+          summary: "Policy has been in monitor mode for over 24h — no controls are blocking"
+
+  - name: rag-routing-and-tools
+    interval: 30s
+    rules:
+      - alert: RouterSendingTrafficAwayFromDocuments
+        # The router exists to skip retrieval where it isn't needed, but if
+        # the majority of traffic stops reaching the corpus, the classifier
+        # has drifted and users are getting ungrounded answers.
+        expr: >-
+          sum(rate(rag_retrieval_skipped_total[30m]))
+          / clamp_min(sum(rate(rag_router_decisions_total[30m])), 0.001) > 0.7
+        for: 30m
+        labels:
+          severity: warning
+          risk_id: R-T06
+          gm3_function: measure
+        annotations:
+          summary: "Over 70% of queries are bypassing document retrieval"
+          description: >-
+            Check the rag_router_decisions_total mix by route. Set
+            enable_query_router=false to restore always-RAG behaviour while
+            investigating.
+
+      - alert: RouterClassifierFallingBackConstantly
+        # `fallback` means the classifier returned something unusable or below
+        # the confidence threshold. Every one costs a model call and yields
+        # nothing.
+        expr: >-
+          sum(rate(rag_router_decisions_total{source="fallback"}[15m]))
+          / clamp_min(sum(rate(rag_router_decisions_total[15m])), 0.001) > 0.3
+        for: 15m
+        labels:
+          severity: warning
+          risk_id: R-T06
+          gm3_function: measure
+        annotations:
+          summary: "Over 30% of routing decisions are falling back to RAG"
+
+      - alert: ToolErrorRateHigh
+        expr: >-
+          sum by (tool) (rate(rag_tool_invocations_total{outcome="error"}[10m]))
+          / clamp_min(sum by (tool) (rate(rag_tool_invocations_total[10m])), 0.001) > 0.25
+        for: 10m
+        labels:
+          severity: warning
+          risk_id: R-S05
+          gm3_function: govern
+        annotations:
+          summary: "Tool {{ $labels.tool }} is failing more than a quarter of the time"
+
+  - name: rag-privacy
+    interval: 30s
+    rules:
+      - alert: PIIRedactionStopped
+        # Silence here is ambiguous and dangerous: either the corpus genuinely
+        # contains no PII, or a detector regression has quietly disabled
+        # redaction while passages keep flowing to the provider. Alerting on
+        # "traffic continues but redactions stopped" distinguishes them.
+        expr: >-
+          sum(rate(rag_pii_redactions_total[1h])) == 0
+          and sum(rate(rag_answers_total{outcome="served"}[1h])) > 0.05
+        for: 2h
+        labels:
+          severity: warning
+          risk_id: R-S03
+          gm3_function: map
+        annotations:
+          summary: "No PII has been redacted in an hour despite steady traffic"
+          description: >-
+            Confirm GOVERNANCE_PII_REDACTION_ENABLED is true and the detector
+            list is not empty before assuming the corpus is simply clean.
+
+      - alert: AuthFailureSpike
+        # Distinguishes an attack (many `invalid`) from a client bug (many
+        # `expired`) by keeping the reason label.
+        expr: >-
+          sum by (result) (rate(rag_auth_verifications_total{result!="ok"}[10m])) > 1
+        for: 10m
+        labels:
+          severity: warning
+          risk_id: R-G03
+          gm3_function: govern
+        annotations:
+          summary: "Token verification failing ({{ $labels.result }}) at over 1/s"
+
+  - name: rag-cost
+    interval: 60s
+    rules:
+      - alert: LLMSpendRateHigh
+        # Hourly burn rate, not a total: a total alerts once and then stays
+        # firing forever, which trains people to ignore it.
+        expr: sum(rate(rag_llm_cost_usd_total[1h])) * 3600 > 20
+        for: 30m
+        labels:
+          severity: warning
+          risk_id: R-O05
+          gm3_function: manage
+        annotations:
+          summary: "LLM spend is running above $20/hour"
+
+      - alert: GatewayFallbackSustained
+        expr: sum(rate(rag_llm_gateway_fallbacks_total[15m])) > 0.1
+        for: 15m
+        labels:
+          severity: warning
+          risk_id: R-O04
+          gm3_function: manage
+        annotations:
+          summary: "The gateway is failing over from {{ $labels.from_provider }} continuously"
+          description: >-
+            The primary provider is degraded. Answers are still being served
+            by the fallback, which may use a different model.
+
+  - name: rag-availability
+    interval: 30s
+    rules:
+      - alert: AnsweringDisabled
+        expr: rag_kill_switch_state{flag="answering_enabled"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          risk_id: R-O01
+          gm3_function: manage
+        annotations:
+          summary: "Answering has been disabled by an operator kill switch"
+
+      - alert: QueryLatencyP95High
+        expr: >-
+          histogram_quantile(0.95, sum by (le) (rate(rag_query_latency_seconds_bucket[10m]))) > 10
+        for: 10m
+        labels:
+          severity: warning
+          risk_id: R-O02
+          gm3_function: manage
+        annotations:
+          summary: "p95 query latency above 10s"
+
+      - alert: NoTrafficScraped
+        expr: up{job="rag-api"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          risk_id: R-O01
+          gm3_function: manage
+        annotations:
+          summary: "Prometheus cannot scrape the API"

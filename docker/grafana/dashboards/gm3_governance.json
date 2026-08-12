@@ -1,0 +1,237 @@
+{
+  "uid": "rag-gm3-governance",
+  "title": "RAG Governance (GM3)",
+  "description": "One panel row per NIST AI RMF function. Every panel maps to a control in docs/governance/risk_register.yaml.",
+  "tags": ["governance", "gm3", "rag"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "type": "row",
+      "title": "GOVERN — what the rules are and whether they held",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false
+    },
+    {
+      "type": "stat",
+      "title": "Policy in force",
+      "description": "Version and enforcement mode of the AIPolicy this process loaded. 'monitor' means no control is blocking.",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 1 },
+      "targets": [
+        { "expr": "rag_policy_info", "legendFormat": "{{version}} / {{enforcement_mode}}", "refId": "A" }
+      ],
+      "options": { "textMode": "name", "colorMode": "background", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "mappings": [], "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] } } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Policy violations by control",
+      "description": "Which control is catching violations, and how often. A control that never fires is either unnecessary or not wired up.",
+      "gridPos": { "h": 8, "w": 9, "x": 6, "y": 1 },
+      "targets": [
+        { "expr": "sum by (control_id) (rate(rag_policy_violations_total[5m]))", "legendFormat": "{{control_id}}", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "fillOpacity": 10 } } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Audit events (write failures are the critical series)",
+      "description": "outcome=write_failed means the audit trail has holes and cannot be relied on.",
+      "gridPos": { "h": 8, "w": 9, "x": 15, "y": 1 },
+      "targets": [
+        { "expr": "sum by (outcome) (rate(rag_audit_events_total[5m]))", "legendFormat": "{{outcome}}", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "fillOpacity": 10 } } }
+    },
+    {
+      "type": "stat",
+      "title": "Access denials (1h)",
+      "description": "RBAC and data-classification refusals.",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 5 },
+      "targets": [
+        { "expr": "sum by (reason) (increase(rag_access_denied_total[1h]))", "legendFormat": "{{reason}}", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+
+    {
+      "type": "row",
+      "title": "MAP — data classification and provenance",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 },
+      "collapsed": false
+    },
+    {
+      "type": "timeseries",
+      "title": "Chunks withheld by clearance",
+      "description": "Should be flat zero: the Qdrant/Elasticsearch pre-filters run first. Any non-zero value means a pre-filter is not applying the allow-list.",
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 10 },
+      "targets": [
+        { "expr": "sum by (sensitivity) (rate(rag_retrieval_blocked_chunks_total[5m]))", "legendFormat": "{{sensitivity}}", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": { "fillOpacity": 10 },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 0.001 }] }
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Documents ingested",
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 10 },
+      "targets": [
+        { "expr": "sum by (file_type, status) (rate(rag_documents_ingested_total[15m]))", "legendFormat": "{{file_type}} / {{status}}", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "fillOpacity": 10 } } }
+    },
+
+    {
+      "type": "row",
+      "title": "MEASURE — is it any good, offline and live",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 17 },
+      "collapsed": false
+    },
+    {
+      "type": "timeseries",
+      "title": "Offline evaluation scores vs policy floors",
+      "description": "Moves only when an evaluation run completes. Red band is below the 0.75 faithfulness floor.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 18 },
+      "targets": [
+        { "expr": "rag_evaluation_score", "legendFormat": "{{metric}} ({{dataset}})", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "custom": { "fillOpacity": 5 },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 0.75 }] }
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Online judge scores (live traffic, 1h mean)",
+      "description": "Same judge prompts as the offline runner, so the two are directly comparable. A gap between them is a fact about the traffic, not the metric.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 18 },
+      "targets": [
+        {
+          "expr": "sum by (metric) (rate(rag_online_eval_score_sum[1h])) / clamp_min(sum by (metric) (rate(rag_online_eval_score_count[1h])), 1)",
+          "legendFormat": "{{metric}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1, "custom": { "fillOpacity": 5 } } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Citation validation — hallucination signal",
+      "description": "hallucinated_index = the model cited a source that was never in its context.",
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 26 },
+      "targets": [
+        { "expr": "sum by (result) (rate(rag_citation_validation_total[5m]))", "legendFormat": "{{result}}", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "fillOpacity": 10 } } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Answer outcomes",
+      "description": "served / cached / refused / error / disabled. A refusal is a governed outcome, not a failure.",
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 26 },
+      "targets": [
+        { "expr": "sum by (outcome) (rate(rag_answers_total[5m]))", "legendFormat": "{{outcome}}", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "fillOpacity": 10, "stacking": { "mode": "normal" } } } }
+    },
+    {
+      "type": "timeseries",
+      "title": "User feedback",
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 26 },
+      "targets": [
+        { "expr": "sum by (sentiment) (increase(rag_user_feedback_total[1h]))", "legendFormat": "{{sentiment}}", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "fillOpacity": 10 } } }
+    },
+
+    {
+      "type": "row",
+      "title": "MANAGE — latency, cost, and the switches",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 33 },
+      "collapsed": false
+    },
+    {
+      "type": "timeseries",
+      "title": "Per-stage latency (p95)",
+      "description": "The aggregate view a single trace cannot give you: which stage is slow across all requests.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 34 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, stage) (rate(rag_stage_latency_seconds_bucket[5m])))",
+          "legendFormat": "{{stage}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "fillOpacity": 0 } } }
+    },
+    {
+      "type": "timeseries",
+      "title": "End-to-end query latency (p50 / p95)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 34 },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum by (le) (rate(rag_query_latency_seconds_bucket[5m])))", "legendFormat": "p50", "refId": "A" },
+        { "expr": "histogram_quantile(0.95, sum by (le) (rate(rag_query_latency_seconds_bucket[5m])))", "legendFormat": "p95", "refId": "B" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "type": "stat",
+      "title": "Kill switches",
+      "description": "1 = enabled. A zero here explains a traffic drop that would otherwise look like an outage.",
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 42 },
+      "targets": [
+        { "expr": "rag_kill_switch_state", "legendFormat": "{{flag}}", "refId": "A" }
+      ],
+      "options": { "colorMode": "background", "graphMode": "none" },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "DISABLED", "color": "red", "index": 0 }, "1": { "text": "enabled", "color": "green", "index": 1 } } }
+          ]
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "LLM token spend",
+      "description": "Cost is the first thing a governance review asks for and the hardest to reconstruct afterwards.",
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 42 },
+      "targets": [
+        { "expr": "sum by (model, token_type) (rate(rag_llm_tokens_total[10m]) * 60)", "legendFormat": "{{model}} {{token_type}}", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "fillOpacity": 10 } } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Cache hit rates",
+      "description": "Every embedding-cache miss is a billed API call; every semantic-cache hit is a whole answer not generated.",
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 42 },
+      "targets": [
+        {
+          "expr": "sum(rate(rag_embedding_cache_hits_total{result=\"hit\"}[10m])) / clamp_min(sum(rate(rag_embedding_cache_hits_total[10m])), 0.001)",
+          "legendFormat": "embedding",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rate(rag_semantic_cache_lookups_total{result=\"hit\"}[10m])) / clamp_min(sum(rate(rag_semantic_cache_lookups_total[10m])), 0.001)",
+          "legendFormat": "semantic",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 } }
+    }
+  ]
+}
