@@ -52,6 +52,30 @@ Most of that already exists in this codebase. This document records what is reus
 | **Page rendering** | `pypdfium2` (Apache-2.0/BSD-3) | PyMuPDF is AGPL-3.0. |
 | **Job queue** | `arq` (MIT) | Async-native, reuses the Redis we already run, no extra broker or result backend. Celery is prefork/thread-oriented; RQ is sync-only. |
 | **Frontend** | Streamlit first, Next.js after | De-risks the new APIs before a React app is written against them. |
+| **Framework** | LangChain + LangGraph, LangSmith for evaluation only | See 14.3.1. |
+
+### 14.3.1 LangChain / LangGraph adoption
+
+Adopted where a maintained implementation exists and delegating loses nothing:
+
+| Now | Was |
+|---|---|
+| `ChatOpenAI` / `ChatAnthropic` / `AzureChatOpenAI` | Three hand-written provider clients (~400 lines of HTTP plumbing, streaming-chunk parsing, usage extraction, per-vendor quirks) |
+| `OpenAIEmbeddings` / `HuggingFaceEmbeddings` | An AsyncOpenAI wrapper with its own batching and retry, plus two SentenceTransformer wrappers |
+| **LangGraph `StateGraph`** (`src/retrieval/graph/`) | Five async generators delegating into one another with early returns at eight points, plus a separate hand-rolled node-graph workflow engine (deleted) |
+
+**Not delegated, and why.** Each of these would lose behaviour the framework has no equivalent for:
+
+- **`LLMGateway`** stays wrapped around the chat models. It holds the approved-provider policy check, per-provider Prometheus metrics, cost accounting, feature-flag-gated fallback, and the rule that a stream never fails over once a token has reached the client. `.with_fallbacks()` covers only the failover, and silently.
+- **The embedding cache.** LangChain's `CacheBackedEmbeddings` is `langchain-classic` in v1 and reports no hit rate. That rate is a direct cost control — every miss is a billed call.
+- **The E5 prefix convention.** `HuggingFaceEmbeddings` has no equivalent, and omitting `query: ` / `passage: ` degrades retrieval silently rather than erroring.
+- **The clearance pre-filter and the governance layer.** No LangChain equivalent exists, and this is the security boundary.
+- **The semantic cache's numeric-literal guard**, which stops "within 30 days" matching a cached "within 14 days" answer — dangerous for load capacities and dimensions.
+- **The evaluation judges.** They return `None` on an unparseable response and exclude it from aggregation, rather than scoring 0.5 and making it indistinguishable from a mediocre answer.
+
+**A note on LangChain 1.x.** This resolved to `langchain-core` 1.5 / `langgraph` 1.2, where the `langchain` package is essentially empty: `EnsembleRetriever`, `ContextualCompressionRetriever`, `CrossEncoderReranker` and `CacheBackedEmbeddings` all moved to `langchain-classic`. New work is not built on a package that ships as "classic", so retrieval composition is LangGraph nodes over `langchain-core` abstractions, and the small RRF fusion and reranking helpers stay as they are.
+
+**LangSmith is evaluation-only.** LangChain enables LangSmith export from environment variables alone, with nothing in the code opting in — which for this system would send prompt text and retrieved drawing content off-network as a side effect of a key set to run an eval. `src/monitoring/langsmith.py` therefore sets the flags explicitly in both directions at startup, and logs a warning when export is on. Runtime tracing stays on Langfuse, which is self-hostable.
 
 ## 14.4 Access model (single source of truth)
 
