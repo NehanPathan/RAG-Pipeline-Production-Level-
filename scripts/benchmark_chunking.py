@@ -43,20 +43,20 @@ from src.evaluation.offline.metrics import (  # noqa: E402
     score_context_relevancy,
     score_faithfulness,
 )
-from src.infrastructure.database.postgres.chunk_repository import (
-    PostgresChunkRepository,  # noqa: E402
+from src.infrastructure.database.postgres.chunk_repository import (  # noqa: E402
+    PostgresChunkRepository,
 )
 from src.infrastructure.database.postgres.connection import get_session_factory  # noqa: E402
-from src.infrastructure.database.postgres.document_repository import (
-    PostgresDocumentRepository,  # noqa: E402
+from src.infrastructure.database.postgres.document_repository import (  # noqa: E402
+    PostgresDocumentRepository,
 )
 from src.infrastructure.database.redis.connection import RedisCache, get_redis_client  # noqa: E402
 from src.infrastructure.search.elasticsearch.repository import (  # noqa: E402
     ElasticsearchSearchRepository,
     create_elasticsearch_client,
 )
-from src.infrastructure.vector_store.qdrant.cache_repository import (
-    QdrantSemanticCacheRepository,  # noqa: E402
+from src.infrastructure.vector_store.qdrant.cache_repository import (  # noqa: E402
+    QdrantSemanticCacheRepository,
 )
 from src.infrastructure.vector_store.qdrant.repository import (  # noqa: E402
     QdrantVectorRepository,
@@ -72,7 +72,6 @@ from src.ingestion.chunkers.parent_child_chunker import (  # noqa: E402
 from src.ingestion.chunkers.semantic_chunker import SemanticChunker  # noqa: E402
 from src.ingestion.chunkers.structure_chunker import StructureChunker  # noqa: E402
 from src.ingestion.embedders.embedding_strategy import EmbeddingStrategy  # noqa: E402
-from src.ingestion.embedders.openai_embedder import OpenAIEmbeddingProvider  # noqa: E402
 from src.ingestion.embedders.registry import get_embedding_provider  # noqa: E402
 from src.ingestion.enrichers.llm_enricher import LLMMetadataEnricher  # noqa: E402
 from src.ingestion.layout.heuristic_layout_analyzer import HeuristicLayoutAnalyzer  # noqa: E402
@@ -353,13 +352,8 @@ async def _run_variant(
     cache_repo = QdrantSemanticCacheRepository(
         client=qdrant_client, collection_name=f"{settings.qdrant_cache_collection_name}_bench_{collection_suffix}"
     )
-    embedder = OpenAIEmbeddingProvider(
-        api_key=settings.openai_api_key,
-        model=settings.openai_embedding_model,
-        dimensions=settings.openai_embedding_dimensions,
-        batch_size=settings.embedding_batch_size,
-        cache=RedisCache(get_redis_client()),
-        cache_ttl=settings.redis_ttl_embedding,
+    embedder = get_embedding_provider(
+        settings, role="retrieval", cache=RedisCache(get_redis_client())
     )
     embedding_strategy = EmbeddingStrategy(
         chunking_provider=get_embedding_provider(settings, role="chunking"), retrieval_provider=embedder
@@ -464,7 +458,7 @@ def _print_report(report: BenchmarkReport) -> None:
     print(f"\n{'Metric':<30}{'Current (ParentChild)':<25}{'Hybrid':<25}")
     print("-" * 80)
     for label, cv, hv in rows:
-        print(f"{label:<30}{str(cv):<25}{str(hv):<25}")
+        print(f"{label:<30}{cv!s:<25}{hv!s:<25}")
     print(
         "\nNote: context_relevancy is an LLM-judge proxy for retrieval "
         "precision/recall -- this corpus has no hand-labeled relevant-chunk "

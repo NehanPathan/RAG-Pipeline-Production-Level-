@@ -4,9 +4,7 @@ import pytest
 
 import src.ingestion.embedders.registry as registry_module
 from src.config import Settings
-from src.ingestion.embedders.bge_embedder import BGEEmbeddingProvider
-from src.ingestion.embedders.e5_embedder import E5EmbeddingProvider
-from src.ingestion.embedders.openai_embedder import OpenAIEmbeddingProvider
+from src.ingestion.embedders.langchain_embedder import LangChainEmbeddingProvider
 from src.ingestion.embedders.registry import build_embedding_strategy, get_embedding_provider
 
 
@@ -21,50 +19,79 @@ def _settings(**overrides) -> Settings:
 
 @pytest.fixture(autouse=True)
 def reset_model_cache():
-    registry_module._bge_model = None
-    registry_module._e5_model = None
+    registry_module.reset_local_model_cache()
     yield
-    registry_module._bge_model = None
-    registry_module._e5_model = None
+    registry_module.reset_local_model_cache()
+
+
+def _patched_hf():
+    """Patch the local-model constructor so no multi-GB download happens."""
+    return patch("langchain_huggingface.HuggingFaceEmbeddings", return_value=MagicMock())
 
 
 def test_retrieval_role_defaults_to_openai():
     provider = get_embedding_provider(_settings(), role="retrieval")
-    assert isinstance(provider, OpenAIEmbeddingProvider)
+
+    assert isinstance(provider, LangChainEmbeddingProvider)
+    assert provider.model_id == "text-embedding-3-large"
+    assert provider.dimensions == 3072
 
 
 def test_chunking_role_defaults_to_bge_m3():
-    fake_st = MagicMock()
-    with patch("sentence_transformers.SentenceTransformer", return_value=fake_st):
+    with _patched_hf():
         provider = get_embedding_provider(_settings(), role="chunking")
-    assert isinstance(provider, BGEEmbeddingProvider)
+
+    assert provider.model_id == "BAAI/bge-m3"
+    assert provider.dimensions == 1024
 
 
-def test_chunking_role_can_select_e5_large():
-    fake_st = MagicMock()
-    with patch("sentence_transformers.SentenceTransformer", return_value=fake_st):
+def test_e5_can_be_selected_for_the_chunking_role():
+    with _patched_hf():
         provider = get_embedding_provider(
             _settings(chunking_embedding_provider="e5_large"), role="chunking"
         )
-    assert isinstance(provider, E5EmbeddingProvider)
+
+    assert provider.model_id == "intfloat/e5-large-v2"
 
 
-def test_sentence_transformer_model_is_cached_across_calls():
-    fake_ctor = MagicMock(return_value=MagicMock())
-    with patch("sentence_transformers.SentenceTransformer", fake_ctor):
+def test_e5_applies_its_instruction_prefixes():
+    """E5 is trained to see "query: " and "passage: ". Omitting them degrades
+    retrieval quality silently rather than erroring, so the registry must
+    configure them rather than leaving it to callers."""
+    with _patched_hf():
+        provider = get_embedding_provider(
+            _settings(chunking_embedding_provider="e5_large"), role="chunking"
+        )
+
+    assert provider._query_prefix == "query: "
+    assert provider._document_prefix == "passage: "
+
+
+def test_openai_is_configured_without_prefixes():
+    provider = get_embedding_provider(_settings(), role="retrieval")
+
+    assert provider._query_prefix == ""
+    assert provider._document_prefix == ""
+
+
+def test_local_model_is_constructed_once_per_process():
+    """These are multi-hundred-MB downloads; constructing one per call would
+    make every request that touches the chunking role pay for it."""
+    with _patched_hf() as hf:
         get_embedding_provider(_settings(), role="chunking")
         get_embedding_provider(_settings(), role="chunking")
-    assert fake_ctor.call_count == 1
+
+    assert hf.call_count == 1
 
 
 def test_unsupported_provider_raises():
     with pytest.raises(ValueError, match="Unsupported embedding provider"):
-        get_embedding_provider(_settings(chunking_embedding_provider="nonexistent"), role="chunking")
+        get_embedding_provider(_settings(embedding_provider="nope"), role="retrieval")
 
 
 def test_build_embedding_strategy_bundles_both_roles():
-    fake_st = MagicMock()
-    with patch("sentence_transformers.SentenceTransformer", return_value=fake_st):
+    with _patched_hf():
         strategy = build_embedding_strategy(_settings())
-    assert isinstance(strategy.retrieval_provider, OpenAIEmbeddingProvider)
-    assert isinstance(strategy.chunking_provider, BGEEmbeddingProvider)
+
+    assert strategy.retrieval_provider.model_id == "text-embedding-3-large"
+    assert strategy.chunking_provider.model_id == "BAAI/bge-m3"

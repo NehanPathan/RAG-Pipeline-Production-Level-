@@ -82,6 +82,13 @@ class Settings(BaseSettings):
     chunking_embedding_provider: str = "bge_m3"  # bge_m3 | e5_large | openai
     bge_model_name: str = "BAAI/bge-m3"
     e5_model_name: str = "intfloat/e5-large-v2"
+    # Declared rather than read off the loaded model. `dimensions` is needed
+    # to create the Qdrant collection, and asking the model for it would mean
+    # downloading several hundred MB before the collection can exist. Both
+    # values are the model cards' published output sizes; change them only
+    # alongside the model name.
+    bge_embedding_dimensions: int = 1024
+    e5_embedding_dimensions: int = 1024
 
     # Reranking
     reranker_provider: str = "bge"

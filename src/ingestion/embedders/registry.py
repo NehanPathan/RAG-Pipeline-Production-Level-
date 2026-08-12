@@ -4,15 +4,20 @@ from typing import Any, Literal
 
 from src.config import Settings
 from src.ingestion.embedders.base import EmbeddingProvider
-from src.ingestion.embedders.openai_embedder import OpenAIEmbeddingProvider
+from src.ingestion.embedders.langchain_embedder import LangChainEmbeddingProvider
 
 EmbeddingRole = Literal["chunking", "retrieval"]
 
-_bge_model: Any = None
-_e5_model: Any = None
+# Local models are multi-hundred-MB downloads, so each is constructed once per
+# process no matter how many times the registry is called. The cache is keyed
+# by model name rather than by role: the same model requested for two roles is
+# one model.
+_local_models: dict[str, Any] = {}
 
 
-def get_embedding_provider(settings: Settings, role: EmbeddingRole, cache: Any = None) -> EmbeddingProvider:
+def get_embedding_provider(
+    settings: Settings, role: EmbeddingRole, cache: Any = None
+) -> EmbeddingProvider:
     """Select and construct the configured EmbeddingProvider for a given role.
 
     `role="chunking"` is used by HybridChunkingPipeline's SemanticChunker for
@@ -20,61 +25,71 @@ def get_embedding_provider(settings: Settings, role: EmbeddingRole, cache: Any =
     in Qdrant and searched at query time. They may be different models --
     exact mirror of `llm/registry.py`'s role-based factory.
 
-    `retrieval` reuses `settings.embedding_provider` (the existing setting
-    `_get_embedder()` in `api/dependencies.py` already reads) so this is a
-    pure addition -- nothing about the existing retrieval embedding wiring
-    changes until Module 8 rewires `_build_ingestion_pipeline()` to use
-    `EmbeddingStrategy`. `chunking` is a new, separate setting since it
-    defaults to a different (local) provider.
+    Each branch now returns a LangChain `Embeddings` wrapped in
+    `LangChainEmbeddingProvider`. The role split, the Redis cache and the
+    cache-hit metric are unchanged.
     """
     provider_name = (
         settings.chunking_embedding_provider if role == "chunking" else settings.embedding_provider
     )
 
     if provider_name == "openai":
-        return OpenAIEmbeddingProvider(
-            api_key=settings.openai_api_key,
-            model=settings.openai_embedding_model,
+        from langchain_openai import OpenAIEmbeddings
+
+        return LangChainEmbeddingProvider(
+            OpenAIEmbeddings(
+                model=settings.openai_embedding_model,
+                dimensions=settings.openai_embedding_dimensions,
+                api_key=settings.openai_api_key or None,
+                chunk_size=settings.embedding_batch_size,
+            ),
+            model_id=settings.openai_embedding_model,
             dimensions=settings.openai_embedding_dimensions,
-            batch_size=settings.embedding_batch_size,
             cache=cache,
             cache_ttl=settings.redis_ttl_embedding,
         )
 
     if provider_name == "bge_m3":
-        from src.ingestion.embedders.bge_embedder import BGEEmbeddingProvider
-
-        return BGEEmbeddingProvider(
-            model=_load_sentence_transformer(settings.bge_model_name, cache_slot="bge"),
+        return LangChainEmbeddingProvider(
+            _local_embeddings(settings.bge_model_name),
             model_id=settings.bge_model_name,
+            dimensions=settings.bge_embedding_dimensions,
+            cache=cache,
+            cache_ttl=settings.redis_ttl_embedding,
         )
 
     if provider_name == "e5_large":
-        from src.ingestion.embedders.e5_embedder import E5EmbeddingProvider
-
-        return E5EmbeddingProvider(
-            model=_load_sentence_transformer(settings.e5_model_name, cache_slot="e5"),
+        # E5 is trained with an instruction-prefix convention that materially
+        # affects retrieval quality; omitting it degrades results silently
+        # rather than erroring. See LangChainEmbeddingProvider.
+        return LangChainEmbeddingProvider(
+            _local_embeddings(settings.e5_model_name),
             model_id=settings.e5_model_name,
+            dimensions=settings.e5_embedding_dimensions,
+            cache=cache,
+            cache_ttl=settings.redis_ttl_embedding,
+            query_prefix="query: ",
+            document_prefix="passage: ",
         )
 
     raise ValueError(f"Unsupported embedding provider {provider_name!r} for role {role!r}")
 
 
-def _load_sentence_transformer(model_name: str, cache_slot: str) -> Any:
-    """Loads (and caches, module-level) a local SentenceTransformer model --
-    these are multi-hundred-MB downloads, so the registry only constructs
-    each one once per process regardless of how many times it's called."""
-    global _bge_model, _e5_model
-    from sentence_transformers import SentenceTransformer
+def _local_embeddings(model_name: str) -> Any:
+    """Load (and process-cache) a local sentence-transformers model."""
+    from langchain_huggingface import HuggingFaceEmbeddings
 
-    if cache_slot == "bge":
-        if _bge_model is None:
-            _bge_model = SentenceTransformer(model_name)
-        return _bge_model
+    if model_name not in _local_models:
+        _local_models[model_name] = HuggingFaceEmbeddings(
+            model_name=model_name,
+            encode_kwargs={"normalize_embeddings": True},
+        )
+    return _local_models[model_name]
 
-    if _e5_model is None:
-        _e5_model = SentenceTransformer(model_name)
-    return _e5_model
+
+def reset_local_model_cache() -> None:
+    """Test helper: drop process-cached local models."""
+    _local_models.clear()
 
 
 def build_embedding_strategy(settings: Settings, cache: Any = None):

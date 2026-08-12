@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import uuid
-
 from src.config import get_settings
 from src.evaluation.online.feedback import FeedbackService
 from src.evaluation.online.sampler import OnlineEvaluator
@@ -34,7 +32,6 @@ from src.ingestion.chunkers.semantic_chunker import SemanticChunker
 from src.ingestion.chunkers.structure_chunker import StructureChunker
 from src.ingestion.embedders.base import EmbeddingProvider
 from src.ingestion.embedders.embedding_strategy import EmbeddingStrategy
-from src.ingestion.embedders.openai_embedder import OpenAIEmbeddingProvider
 from src.ingestion.embedders.registry import get_embedding_provider
 from src.ingestion.enrichers.llm_enricher import LLMMetadataEnricher
 from src.ingestion.layout.heuristic_layout_analyzer import HeuristicLayoutAnalyzer
@@ -90,16 +87,20 @@ _cache_repo: QdrantSemanticCacheRepository | None = None
 
 
 def _get_embedder() -> EmbeddingProvider:
+    """The retrieval-role embedding provider, as one process-wide singleton.
+
+    Built through the registry rather than constructed directly, so the
+    retrieval role honours `EMBEDDING_PROVIDER` like every other caller. The
+    same instance is handed to VectorSearcher and SemanticCache: two
+    instances of *different* models would put the query and the stored
+    chunks in different embedding spaces, and the only symptom would be
+    quietly poor retrieval.
+    """
     global _embedder
     if _embedder is None:
         settings = get_settings()
-        _embedder = OpenAIEmbeddingProvider(
-            api_key=settings.openai_api_key,
-            model=settings.openai_embedding_model,
-            dimensions=settings.openai_embedding_dimensions,
-            batch_size=settings.embedding_batch_size,
-            cache=RedisCache(get_redis_client()),
-            cache_ttl=settings.redis_ttl_embedding,
+        _embedder = get_embedding_provider(
+            settings, role="retrieval", cache=RedisCache(get_redis_client())
         )
     return _embedder
 

@@ -13,13 +13,11 @@ from src.retrieval.pipeline import QueryPipeline
 def _reset():
     reset_query_pipeline()
     dependencies_module._ingestion_pipeline = None
-    embedding_registry_module._bge_model = None
-    embedding_registry_module._e5_model = None
+    embedding_registry_module.reset_local_model_cache()
     yield
     reset_query_pipeline()
     dependencies_module._ingestion_pipeline = None
-    embedding_registry_module._bge_model = None
-    embedding_registry_module._e5_model = None
+    embedding_registry_module.reset_local_model_cache()
 
 
 def test_get_query_pipeline_constructs_without_error():
