@@ -28,7 +28,11 @@ class CitationPreserver:
                 document_name=source,
                 chunk_id=chunk.id,
                 page_number=chunk.chunk_metadata.page_number,
-                section=chunk.chunk_metadata.section,
+                # `section_title` is the structured heading StructureChunker
+                # attaches and is the richer of the two; `section` is only
+                # ever populated by UnstructuredLoader, so preferring it
+                # would leave every Docling-parsed citation sectionless.
+                section=chunk.chunk_metadata.section_title or chunk.chunk_metadata.section,
                 document_id=chunk.document_id,
             )
         return citations

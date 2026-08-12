@@ -133,8 +133,23 @@ class DocumentChunkModel(Base):
     # Denormalized from documents.sensitivity so a chunk-level read (and the
     # Qdrant/Elasticsearch payloads built from it) carries its classification
     # without a join. Kept in sync by the ingestion pipeline; a
-    # reclassification re-writes both stores (see documents route).
+    # reclassification partial-updates both stores (see documents route).
     sensitivity: Mapped[str | None] = mapped_column(String(20))
+
+    # The remaining denormalized fields, given a system of record here.
+    #
+    # These are written into the Qdrant payload and the Elasticsearch
+    # document body at ingest, and `user_id` is the tenant filter every
+    # retrieval runs against. Until now they existed *only* in those two
+    # stores, which made Postgres unable to reconstruct a chunk faithfully --
+    # so any code path that reloaded chunks and re-indexed silently wiped the
+    # tenant filter, and no backfill or re-index tool was possible at all.
+    # See migration 0004 and scripts/reindex_chunks.py.
+    user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    domain: Mapped[str | None] = mapped_column(String(100))
+    tags: Mapped[list[str] | None] = mapped_column(ARRAY(String))
+    file_type: Mapped[str | None] = mapped_column(String(50))
+    document_name: Mapped[str | None] = mapped_column(String(500))
 
     document: Mapped[DocumentModel] = relationship("DocumentModel", back_populates="chunks")
 

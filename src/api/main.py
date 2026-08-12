@@ -11,7 +11,7 @@ from starlette.responses import Response
 
 from src.api.dependencies import (
     ensure_cache_collection,
-    ensure_governance_indexes,
+    ensure_search_schema,
     get_ingestion_pipeline,
 )
 from src.api.middleware import TraceContextMiddleware
@@ -103,11 +103,12 @@ async def lifespan(app: FastAPI):
         await ensure_cache_collection()
         logger.info("cache_collection_ensured")
 
-        # Payload indexes for fields added after a collection may already
-        # exist (`sensitivity`). Without this the classification filter runs
-        # as a full scan on any pre-governance deployment.
-        await ensure_governance_indexes()
-        logger.info("governance_indexes_ensured")
+        # Schema catch-up for both search backends. Qdrant payload indexes
+        # and Elasticsearch mapping properties added after the collection or
+        # index already existed are otherwise never applied -- silently, in
+        # both cases. See ensure_search_schema for why each one is needed.
+        await ensure_search_schema()
+        logger.info("search_schema_ensured")
 
         # Warm up the ingestion pipeline (and its embedding models) here,
         # not lazily on the first document upload. `get_ingestion_pipeline()`

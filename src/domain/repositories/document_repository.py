@@ -4,6 +4,7 @@ import uuid
 from abc import ABC, abstractmethod
 
 from src.domain.entities.document import Document, DocumentChunk, DocumentStatus
+from src.domain.value_objects.sensitivity import Sensitivity
 
 
 class DocumentRepository(ABC):
@@ -62,6 +63,11 @@ class ChunkRepository(ABC):
 
     @abstractmethod
     async def get_by_ids(self, chunk_ids: list[uuid.UUID]) -> list[DocumentChunk]:
+        ...
+
+    @abstractmethod
+    async def set_sensitivity(self, document_id: uuid.UUID, sensitivity: Sensitivity) -> int:
+        """Reclassify every chunk of a document, returning the row count."""
         ...
 
     @abstractmethod

@@ -12,6 +12,11 @@ from src.monitoring.logger import get_logger
 
 logger = get_logger(__name__)
 
+# Loaders whose output is a raster image rather than a text layer. When OCR
+# ran on one of these, the document is a scan of a drawing or photograph and
+# is validated against the lower OCR confidence floor.
+_DRAWING_LOADERS = frozenset({"image_passthrough"})
+
 
 class HybridChunkingPipeline:
     """Part 4: StructureChunker -> SemanticChunker -> ParentChildChunker ->
@@ -59,12 +64,17 @@ class HybridChunkingPipeline:
             )
             for chunk in section_chunks:
                 chunk.chunk_metadata.heading_level = segment.heading_level
+                chunk.chunk_metadata.ocr_confidence = segment.ocr_confidence
             all_chunks.extend(section_chunks)
             position += len(section_chunks)
 
         ocr_metadata = parsed_document.ocr_metadata
         ocr_confidence = ocr_metadata.confidence if ocr_metadata.ran else None
-        result = self._validator.validate(all_chunks, ocr_confidence=ocr_confidence)
+        result = self._validator.validate(
+            all_chunks,
+            ocr_confidence=ocr_confidence,
+            is_drawing=self._is_drawing(parsed_document),
+        )
 
         logger.info(
             "hybrid_chunking_complete",
@@ -75,6 +85,18 @@ class HybridChunkingPipeline:
             chunks_rejected=len(result.rejected),
         )
         return result.valid
+
+    def _is_drawing(self, parsed_document: ParsedDocument) -> bool:
+        """Whether this document should be validated against the drawing OCR floor.
+
+        Engineering drawings scan far worse than prose -- rotated dimension
+        text, hatching and leader lines drag the mean down -- so a document
+        whose text came wholly from OCR of an image gets the lower floor. A
+        scanned PDF report still has the standard floor, because its text is
+        laid out as prose and should OCR cleanly.
+        """
+        loader = parsed_document.raw.loader_name
+        return parsed_document.ocr_metadata.ran and loader in _DRAWING_LOADERS
 
     def _table_chunk(self, document_id: uuid.UUID, segment: SemanticSegment, position: int) -> DocumentChunk:
         content = f"Table:\n{segment.text}"
@@ -89,5 +111,6 @@ class HybridChunkingPipeline:
                 section_title=segment.section_title,
                 heading_level=segment.heading_level,
                 contains_table=True,
+                ocr_confidence=segment.ocr_confidence,
             ),
         )

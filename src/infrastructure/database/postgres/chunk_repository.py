@@ -4,6 +4,7 @@ import uuid
 
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import select
+from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.domain.entities.document import ChunkMetadata, ChunkType, DocumentChunk
@@ -46,6 +47,15 @@ class PostgresChunkRepository(ChunkRepository):
                         ocr_confidence=chunk.chunk_metadata.ocr_confidence,
                         language=chunk.chunk_metadata.language,
                         sensitivity=chunk.sensitivity.value,
+                        # Denormalized fields (migration 0004). Persisted so
+                        # Postgres can rebuild a chunk faithfully -- without
+                        # these, re-indexing from Postgres wipes the tenant
+                        # filter out of Elasticsearch.
+                        user_id=chunk.user_id,
+                        domain=chunk.domain,
+                        tags=chunk.tags or None,
+                        file_type=chunk.file_type,
+                        document_name=chunk.document_name,
                     )
                 )
             await session.commit()
@@ -68,6 +78,25 @@ class PostgresChunkRepository(ChunkRepository):
                 select(DocumentChunkModel).where(DocumentChunkModel.id.in_(chunk_ids))
             )
             return [_to_entity(model) for model in result.scalars().all()]
+
+    async def set_sensitivity(
+        self, document_id: uuid.UUID, sensitivity: Sensitivity
+    ) -> int:
+        """Reclassify every chunk of a document in one statement.
+
+        A bulk UPDATE rather than load-mutate-save: reclassification touches
+        every chunk of the document and none of the other fields, so there is
+        nothing to be gained from materialising hundreds of entities, and
+        doing so was how the denormalized search-backend fields got lost.
+        """
+        async with self._session_factory() as session:
+            result = await session.execute(
+                sa_update(DocumentChunkModel)
+                .where(DocumentChunkModel.document_id == document_id)
+                .values(sensitivity=sensitivity.value)
+            )
+            await session.commit()
+            return int(result.rowcount or 0)
 
     async def delete_by_document(self, document_id: uuid.UUID) -> int:
         async with self._session_factory() as session:
@@ -111,4 +140,9 @@ def _to_entity(model: DocumentChunkModel) -> DocumentChunk:
         qdrant_point_id=model.qdrant_point_id,
         created_at=model.created_at,
         sensitivity=Sensitivity.parse(model.sensitivity, Sensitivity.INTERNAL),
+        user_id=model.user_id,
+        domain=model.domain,
+        tags=list(model.tags) if model.tags else [],
+        file_type=model.file_type,
+        document_name=model.document_name,
     )

@@ -144,14 +144,24 @@ async def ensure_cache_collection() -> None:
     await _get_cache_repo().create_collection_if_not_exists(_get_embedder().dimensions)
 
 
-async def ensure_governance_indexes() -> None:
-    """Add the `sensitivity` payload index to a pre-existing collection.
+async def ensure_search_schema() -> None:
+    """Bring both search backends' schemas up to date on an existing deployment.
 
-    `create_collection_if_not_exists` only indexes fields when it actually
-    creates the collection, so a deployment that already had
-    `document_chunks` would run the classification filter unindexed.
+    Both backends short-circuit their creation calls once the collection or
+    index exists, so neither notices a field added later:
+
+    * Qdrant's `create_collection_if_not_exists` only indexes payload fields
+      when it actually creates the collection, so a pre-existing
+      `document_chunks` would run the classification filter as a full scan.
+    * Elasticsearch's `create_index_if_not_exists` returns early when the
+      index is there, so an edited `INDEX_MAPPINGS` never reaches a
+      deployment that has already ingested a document.
+
+    Both are silent failures — correct-looking results, wrong performance or
+    a mis-typed field — so they are repaired explicitly at startup.
     """
-    await _get_vector_repo().ensure_governance_indexes()
+    await _get_vector_repo().ensure_payload_indexes()
+    await _get_search_repo().ensure_mapping()
 
 
 _query_pipeline: QueryPipeline | None = None

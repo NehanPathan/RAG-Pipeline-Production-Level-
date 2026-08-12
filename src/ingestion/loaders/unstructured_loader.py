@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import Any
 
 from src.ingestion.loaders.base import DocumentLoader, RawDocument, TableBlock, TextBlock
 from src.monitoring.logger import get_logger
@@ -32,12 +34,38 @@ _LABEL_MAP = {
 }
 
 
+PartitionFn = Callable[..., Sequence[Any]]
+
+
 class UnstructuredLoader(DocumentLoader):
-    """Fallback loader using Unstructured — handles HTML, TXT, MD, and more."""
+    """Fallback loader using Unstructured — handles HTML, TXT, MD, and more.
+
+    `partition` is injectable, following the same pattern as
+    `TesseractProvider(page_loader=..., image_to_data=...)`. This is not
+    ceremony: `unstructured.partition.auto` drags in the entire Unstructured
+    inference stack, and on some platforms importing it segfaults the
+    interpreter outright. Tests that patched `unstructured.partition.auto.partition`
+    had to import that module to patch it, so the "unit" tests took the whole
+    stack with them -- and when the import died, the failure surfaced as the
+    test suite hanging with no error attributable to any test.
+
+    Injecting the seam keeps the real import lazy and confined to production
+    use, where it is genuinely needed.
+    """
+
+    def __init__(self, partition: PartitionFn | None = None) -> None:
+        self._partition = partition
 
     @property
     def name(self) -> str:
         return "unstructured"
+
+    def _resolve_partition(self) -> PartitionFn:
+        if self._partition is not None:
+            return self._partition
+        from unstructured.partition.auto import partition
+
+        return partition
 
     def supports(self, mime_type: str, file_extension: str) -> bool:
         return mime_type in SUPPORTED_MIMES or file_extension.lower() in SUPPORTED_EXTENSIONS
@@ -50,7 +78,7 @@ class UnstructuredLoader(DocumentLoader):
         return await asyncio.to_thread(self._parse, file_path)
 
     def _parse(self, file_path: Path) -> RawDocument:
-        from unstructured.partition.auto import partition
+        partition = self._resolve_partition()
 
         logger.info("unstructured_load_start", file=str(file_path))
 

@@ -17,6 +17,10 @@ class SemanticSegment:
     section_title: str | None = None
     heading_level: int | None = None
     is_table: bool = False
+    # Inherited from the parent StructuralSection. Sentence-level splitting
+    # has no finer confidence signal to offer, so every segment derived from
+    # a section carries that section's figure.
+    ocr_confidence: float | None = None
 
 
 class SemanticChunker:
@@ -58,6 +62,7 @@ class SemanticChunker:
                     section_title=section.section_title,
                     heading_level=section.heading_level,
                     is_table=True,
+                    ocr_confidence=section.ocr_confidence,
                 )
             ]
 
@@ -69,6 +74,7 @@ class SemanticChunker:
                     page_number=section.page_number,
                     section_title=section.section_title,
                     heading_level=section.heading_level,
+                    ocr_confidence=section.ocr_confidence,
                 )
             ]
 
@@ -86,6 +92,7 @@ class SemanticChunker:
                         page_number=section.page_number,
                         section_title=section.section_title,
                         heading_level=section.heading_level,
+                        ocr_confidence=section.ocr_confidence,
                     )
                 )
             start = boundary

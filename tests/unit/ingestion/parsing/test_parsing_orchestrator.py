@@ -5,9 +5,9 @@ import pytest
 
 from src.ingestion.layout.heuristic_layout_analyzer import HeuristicLayoutAnalyzer
 from src.ingestion.layout.labeled_layout_analyzer import LabeledLayoutAnalyzer
-from src.ingestion.loaders.base import RawDocument, TextBlock
+from src.ingestion.loaders.base import BoundingBox, RawDocument, TextBlock
 from src.ingestion.ocr.detector import OCRDetector
-from src.ingestion.ocr.models import OCRPageResult, OCRResult
+from src.ingestion.ocr.models import OCRPageResult, OCRResult, OCRWord
 from src.ingestion.parsing.parsing_orchestrator import DocumentParsingService
 
 
@@ -141,6 +141,115 @@ async def test_mixed_document_ocrs_only_the_sparse_page_and_keeps_the_rest():
 
     # Labels survive on page 1, so the labeled analyzer path is still used.
     assert len(parsed.layout.headings) == 1
+
+
+def _word(text: str, x0: float, y0: float, x1: float, y1: float, conf: float) -> OCRWord:
+    return OCRWord(text=text, confidence=conf, bbox=BoundingBox(x0=x0, y0=y0, x1=x1, y1=y1))
+
+
+class TestOCRBlockGeometry:
+    """Regression: each OCR'd page was collapsed into a single TextBlock with
+    no bbox, no label and no per-block confidence -- discarding the only
+    coordinate data a scanned document ever has, which is exactly what
+    highlighting a matched region needs."""
+
+    @staticmethod
+    def _page_with_words() -> OCRPageResult:
+        # Two visually separate groups: a title block at the top and a
+        # schedule further down the sheet.
+        return OCRPageResult(
+            page_number=1,
+            text="DRG No S-101 REV C\nISMB 300 SPAN 6000",
+            confidence=0.7,
+            words=[
+                _word("DRG", 10, 10, 40, 20, 0.95),
+                _word("No", 45, 10, 60, 20, 0.93),
+                _word("S-101", 65, 10, 110, 20, 0.91),
+                _word("REV", 10, 25, 40, 35, 0.90),
+                _word("C", 45, 25, 55, 35, 0.88),
+                # Large vertical gap -- a separate block.
+                _word("ISMB", 10, 200, 50, 210, 0.60),
+                _word("300", 55, 200, 85, 210, 0.58),
+                _word("SPAN", 10, 215, 50, 225, 0.55),
+                _word("6000", 55, 215, 95, 225, 0.53),
+            ],
+        )
+
+    async def _parse(self):
+        ocr_provider = AsyncMock()
+        ocr_provider.recognize.return_value = OCRResult(
+            engine="tesseract", language="en", pages=[self._page_with_words()]
+        )
+        return await _service(ocr_provider=ocr_provider).process(
+            _scanned_doc(), Path("/tmp/scan.pdf"), file_type="pdf"
+        )
+
+    async def test_words_are_grouped_into_separate_blocks(self):
+        parsed = await self._parse()
+
+        assert len(parsed.raw.text_blocks) == 2, (
+            "the title block and the schedule are visually separate and must not merge"
+        )
+
+    async def test_each_block_keeps_a_bounding_box(self):
+        parsed = await self._parse()
+
+        title_block = parsed.raw.text_blocks[0]
+        assert title_block.bbox is not None
+        assert title_block.bbox.x0 == 10
+        assert title_block.bbox.y0 == 10
+        assert title_block.bbox.x1 == 110
+        assert title_block.bbox.y1 == 35
+
+    async def test_confidence_is_per_block_not_per_document(self):
+        parsed = await self._parse()
+
+        crisp, smudged = parsed.raw.text_blocks
+        assert crisp.ocr_confidence == pytest.approx(0.914, abs=0.01)
+        assert smudged.ocr_confidence == pytest.approx(0.565, abs=0.01)
+        assert crisp.ocr_confidence > smudged.ocr_confidence
+
+    async def test_reading_order_within_a_line_is_left_to_right(self):
+        parsed = await self._parse()
+
+        assert parsed.raw.text_blocks[0].text.startswith("DRG No S-101")
+
+    async def test_ocr_blocks_do_not_hijack_the_labeled_analyzer(self):
+        """OCR blocks carry a label of their own now. A bare truthiness test
+        on element_label would route every scanned document to the labeled
+        analyzer, which reads only structural labels and would therefore
+        return an empty layout for every scan."""
+        service = _service()
+        parsed = await self._parse()
+
+        assert all(b.element_label == "ocr_block" for b in parsed.raw.text_blocks)
+        assert isinstance(
+            service._select_layout_analyzer(parsed.raw), HeuristicLayoutAnalyzer
+        )
+
+    async def test_a_structurally_labeled_block_still_selects_the_labeled_analyzer(self):
+        service = _service()
+        doc = _searchable_doc()
+
+        assert isinstance(service._select_layout_analyzer(doc), LabeledLayoutAnalyzer)
+
+
+async def test_ocr_page_without_word_geometry_falls_back_to_one_block():
+    """Providers that return no per-word boxes must keep working unchanged."""
+    ocr_provider = AsyncMock()
+    ocr_provider.recognize.return_value = OCRResult(
+        engine="tesseract",
+        language="en",
+        pages=[OCRPageResult(page_number=1, text="Whole page text.", confidence=0.77)],
+    )
+    service = _service(ocr_provider=ocr_provider)
+
+    parsed = await service.process(_scanned_doc(), Path("/tmp/scan.pdf"), file_type="pdf")
+
+    assert len(parsed.raw.text_blocks) == 1
+    assert parsed.raw.text_blocks[0].text == "Whole page text."
+    assert parsed.raw.text_blocks[0].bbox is None
+    assert parsed.raw.text_blocks[0].ocr_confidence == pytest.approx(0.77)
 
 
 async def test_text_native_extension_never_triggers_ocr():

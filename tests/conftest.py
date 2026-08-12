@@ -1,13 +1,36 @@
 import asyncio
+import os
 import uuid
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
+# Unit tests must not contact anything outside this process.
+#
+# `Settings` is a pydantic-settings model that reads `.env`, and a real
+# deployment's `.env` carries live Langfuse cloud credentials and an OTLP
+# collector endpoint. Without this, importing the app in a unit test wires up
+# real exporters: the suite makes network calls to cloud.langfuse.com, and the
+# BatchSpanProcessor blocks on retrying failed exports at interpreter
+# shutdown -- which presents as the whole suite hanging after the last test,
+# with no failure and no clue as to why.
+#
+# Environment variables outrank the `.env` file in pydantic-settings, so
+# blanking them here (at conftest import, before any Settings is built) is
+# what makes the suite hermetic. Assignment, not setdefault: the point is to
+# override whatever `.env` says.
+os.environ["LANGFUSE_PUBLIC_KEY"] = ""
+os.environ["LANGFUSE_SECRET_KEY"] = ""
+os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = ""
+os.environ["OTEL_SDK_DISABLED"] = "true"
 
-from src.domain.entities.document import Document, DocumentStatus
-from src.ingestion.chunkers.parent_child_chunker import ChunkingConfig, ParentChildChunker
-from src.ingestion.loaders.base import RawDocument, TextBlock, TableBlock
-from pathlib import Path
+import pytest  # noqa: E402
+
+from src.domain.entities.document import Document, DocumentStatus  # noqa: E402
+from src.ingestion.chunkers.parent_child_chunker import (  # noqa: E402
+    ChunkingConfig,
+    ParentChildChunker,
+)
+from src.ingestion.loaders.base import RawDocument, TableBlock, TextBlock  # noqa: E402
+from pathlib import Path  # noqa: E402
 
 
 @pytest.fixture(scope="session")

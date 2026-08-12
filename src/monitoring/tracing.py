@@ -34,6 +34,14 @@ def configure_tracing(service_name: str, otlp_endpoint: str) -> None:
     global _configured
     if _configured:
         return
+    if not otlp_endpoint:
+        # No collector configured. Installing a provider anyway would attach a
+        # BatchSpanProcessor pointed at nothing, which retries failed exports
+        # and blocks at interpreter shutdown. Leaving the provider uninstalled
+        # yields no-op spans, which is the correct behaviour for "tracing is
+        # switched off" and is what makes test runs hermetic.
+        _configured = True
+        return
     provider = TracerProvider(resource=Resource.create({"service.name": service_name}))
     provider.add_span_processor(
         BatchSpanProcessor(OTLPSpanExporter(endpoint=otlp_endpoint, insecure=True))

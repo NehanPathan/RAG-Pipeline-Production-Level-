@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import Any
 
 from src.domain.entities.document import DocumentChunk
 
@@ -39,6 +40,18 @@ class SearchRepository(ABC):
         top_k: int = 20,
         filters: BM25SearchFilter | None = None,
     ) -> list[BM25ScoredChunk]:
+        ...
+
+    @abstractmethod
+    async def update_fields_by_document(
+        self, document_id: uuid.UUID, fields: dict[str, Any]
+    ) -> int:
+        """Update selected fields on every chunk of one document.
+
+        Distinct from `index_batch` because a full re-index rewrites every
+        field, including the ones denormalized at ingest that a caller
+        reloading from Postgres cannot reconstruct.
+        """
         ...
 
     @abstractmethod

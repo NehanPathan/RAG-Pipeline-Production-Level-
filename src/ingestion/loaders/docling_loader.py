@@ -100,12 +100,25 @@ class DoclingLoader(DocumentLoader):
                 header_sep = "| " + " | ".join(["---"] * len(rows[0])) + " |" if rows else ""
                 markdown = markdown_rows[0] + "\n" + header_sep + "\n" + "\n".join(markdown_rows[1:])
 
+            # Docling's TableItem carries no `page_no` attribute -- the page
+            # lives on its first provenance entry, exactly as it does for text
+            # items above. `getattr(table, "page_no", None)` therefore always
+            # returned None, so every table chunk in the corpus was uncitable
+            # ("which sheet is this schedule on?" had no answer). Bounding box
+            # comes from the same place and is what lets a retrieved schedule
+            # row be highlighted on the rendered page.
+            prov = table.prov[0] if getattr(table, "prov", None) else None
             tables.append(
                 TableBlock(
                     markdown=markdown,
-                    page_number=getattr(table, "page_no", None),
+                    page_number=prov.page_no if prov else None,
                     row_count=len(rows),
                     col_count=len(rows[0]) if rows else 0,
+                    bbox=BoundingBox(
+                        x0=prov.bbox.l, y0=prov.bbox.t, x1=prov.bbox.r, y1=prov.bbox.b
+                    )
+                    if prov is not None and getattr(prov, "bbox", None)
+                    else None,
                 )
             )
 

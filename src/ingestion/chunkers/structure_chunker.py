@@ -12,6 +12,15 @@ class StructuralSection:
     section_title: str | None = None
     heading_level: int | None = None
     is_table: bool = False
+    # Mean OCR confidence of the blocks that contributed to this section,
+    # None when none of them came from OCR. Carried so ChunkValidator can
+    # judge each chunk on its own legibility rather than on the document
+    # average -- see ChunkValidator.validate.
+    ocr_confidence: float | None = None
+
+
+def _mean_confidence(values: list[float]) -> float | None:
+    return sum(values) / len(values) if values else None
 
 
 class StructureChunker:
@@ -36,6 +45,7 @@ class StructureChunker:
         current_heading_level: int | None = None
         buffer: list[str] = []
         buffer_page: int | None = None
+        buffer_confidences: list[float] = []
         list_buffer: list[str] = []
         list_page: int | None = None
 
@@ -49,7 +59,7 @@ class StructureChunker:
             list_page = None
 
         def flush_section() -> None:
-            nonlocal buffer, buffer_page
+            nonlocal buffer, buffer_page, buffer_confidences
             flush_list()
             text = "\n\n".join(part for part in buffer if part.strip())
             if text.strip():
@@ -59,10 +69,12 @@ class StructureChunker:
                         page_number=buffer_page,
                         section_title=current_heading_text,
                         heading_level=current_heading_level,
+                        ocr_confidence=_mean_confidence(buffer_confidences),
                     )
                 )
             buffer = []
             buffer_page = None
+            buffer_confidences = []
 
         for block in parsed_document.raw.text_blocks:
             text = block.text.strip()
@@ -79,6 +91,9 @@ class StructureChunker:
                     else (0 if label == "title" else 1)
                 )
                 continue
+
+            if block.ocr_confidence is not None:
+                buffer_confidences.append(block.ocr_confidence)
 
             if label == "list_item":
                 list_buffer.append(text)

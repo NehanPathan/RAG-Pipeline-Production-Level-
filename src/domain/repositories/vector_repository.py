@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import Any
 
 from src.domain.entities.document import DocumentChunk
 
@@ -40,6 +41,18 @@ class VectorRepository(ABC):
         top_k: int = 20,
         filters: VectorSearchFilter | None = None,
     ) -> list[ScoredChunk]:
+        ...
+
+    @abstractmethod
+    async def set_payload_by_document(
+        self, document_id: uuid.UUID, payload: dict[str, Any]
+    ) -> None:
+        """Update selected payload keys on every vector of one document.
+
+        Distinct from `upsert_batch` because callers that only change
+        metadata (reclassification, revision supersession) do not hold the
+        embeddings and must not be forced to recompute them.
+        """
         ...
 
     @abstractmethod

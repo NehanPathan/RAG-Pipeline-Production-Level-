@@ -320,6 +320,22 @@ async def reclassify_document(
     chunk in Postgres, Qdrant and Elasticsearch. Updating only the document
     row would leave the retrieval filters reading the old label -- the
     classification would appear changed in the UI while behaving unchanged.
+
+    The propagation is a *partial field update*, not a re-index, because a
+    re-index here was silently destructive in both stores:
+
+    * Qdrant's `upsert_batch` skips chunks with no embedding. Chunks reloaded
+      from Postgres have none (vectors live only in Qdrant), so the point
+      list was empty and the new classification never reached the vector
+      store -- the exact opposite of what this endpoint claims to do.
+    * Elasticsearch's `index_batch` replaces the whole document body. The
+      denormalized `user_id`/`domain`/`tags`/`file_type`/`document_name`
+      fields have no Postgres columns to be restored from, so they were
+      rewritten as null and the document dropped out of its own owner's BM25
+      filter -- it became unfindable by keyword search for the person who
+      uploaded it.
+
+    Both are also ~100x cheaper as partial updates on a 500-chunk document.
     """
     policy = get_policy()
     document = await _load_readable_document(document_id, principal)
@@ -338,13 +354,15 @@ async def reclassify_document(
     await get_document_repository().update(document)
 
     doc_uuid = uuid.UUID(document_id)
-    chunk_repo = get_chunk_repository()
-    chunks = await chunk_repo.get_by_document(doc_uuid)
-    for chunk in chunks:
-        chunk.sensitivity = new_classification
-    if chunks:
-        await get_vector_repository().upsert_batch(chunks)
-        await get_search_repository().index_batch(chunks)
+    chunks_reclassified = await get_chunk_repository().set_sensitivity(
+        doc_uuid, new_classification
+    )
+    await get_vector_repository().set_payload_by_document(
+        doc_uuid, {"sensitivity": new_classification.value}
+    )
+    await get_search_repository().update_fields_by_document(
+        doc_uuid, {"sensitivity": new_classification.value}
+    )
 
     # Cached answers were produced under the previous classification and may
     # now be readable by the wrong audience.
@@ -367,7 +385,7 @@ async def reclassify_document(
         doc_id=document_id,
         before=previous.value,
         after=new_classification.value,
-        chunks_reindexed=len(chunks),
+        chunks_reclassified=chunks_reclassified,
     )
     return _to_response(document)
 

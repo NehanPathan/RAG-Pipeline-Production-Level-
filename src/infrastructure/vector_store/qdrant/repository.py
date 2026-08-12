@@ -1,21 +1,30 @@
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.http import models as qdrant_models
 
 from src.config import get_settings
-from src.domain.entities.document import ChunkMetadata, ChunkType, DocumentChunk
+from src.domain.entities.document import DocumentChunk
 from src.domain.repositories.vector_repository import (
     ScoredChunk,
     VectorRepository,
     VectorSearchFilter,
 )
 from src.domain.value_objects.sensitivity import Sensitivity
+from src.infrastructure.serialization.chunk_payload import chunk_to_payload, payload_to_chunk
 from src.monitoring.logger import get_logger
 
 logger = get_logger(__name__)
+
+# Every payload field a filter runs against, in one list, so collection
+# creation and the startup backfill cannot disagree. A field indexed at
+# creation but forgotten in the backfill would full-scan forever on any
+# deployment that already had the collection -- correct results, silently
+# terrible latency, and nothing in the logs to say so.
+INDEXED_PAYLOAD_FIELDS = ("user_id", "domain", "tags", "file_type", "sensitivity")
 
 
 class QdrantVectorRepository(VectorRepository):
@@ -34,54 +43,36 @@ class QdrantVectorRepository(VectorRepository):
                     distance=qdrant_models.Distance.COSINE,
                 ),
             )
-            await self._client.create_payload_index(
-                collection_name=self._collection_name,
-                field_name="user_id",
-                field_schema=qdrant_models.PayloadSchemaType.KEYWORD,
-            )
-            await self._client.create_payload_index(
-                collection_name=self._collection_name,
-                field_name="domain",
-                field_schema=qdrant_models.PayloadSchemaType.KEYWORD,
-            )
-            await self._client.create_payload_index(
-                collection_name=self._collection_name,
-                field_name="tags",
-                field_schema=qdrant_models.PayloadSchemaType.KEYWORD,
-            )
-            await self._client.create_payload_index(
-                collection_name=self._collection_name,
-                field_name="file_type",
-                field_schema=qdrant_models.PayloadSchemaType.KEYWORD,
-            )
             # Governance MAP: the classification filter runs on every single
-            # query, so it needs an index as much as user_id does.
-            await self._client.create_payload_index(
-                collection_name=self._collection_name,
-                field_name="sensitivity",
-                field_schema=qdrant_models.PayloadSchemaType.KEYWORD,
-            )
+            # query, so `sensitivity` needs an index as much as user_id does.
+            for field_name in INDEXED_PAYLOAD_FIELDS:
+                await self._client.create_payload_index(
+                    collection_name=self._collection_name,
+                    field_name=field_name,
+                    field_schema=qdrant_models.PayloadSchemaType.KEYWORD,
+                )
             logger.info("qdrant_collection_created", collection=self._collection_name, vector_size=vector_size)
 
-    async def ensure_governance_indexes(self) -> None:
-        """Add payload indexes introduced after a collection already existed.
+    async def ensure_payload_indexes(self) -> None:
+        """Add payload indexes to a collection that already existed.
 
         `create_collection_if_not_exists` only indexes fields at creation
         time, so a deployment that already had `document_chunks` would filter
-        on `sensitivity` without an index — correct, but a full scan per
-        query. Called from startup; safe to run repeatedly.
+        on any later-added field without an index — correct, but a full scan
+        per query. Called from startup; safe to run repeatedly.
         """
-        try:
-            await self._client.create_payload_index(
-                collection_name=self._collection_name,
-                field_name="sensitivity",
-                field_schema=qdrant_models.PayloadSchemaType.KEYWORD,
-            )
-        except Exception as exc:
-            # Already-indexed and missing-collection both land here and are
-            # both fine: the first is the steady state, the second means no
-            # documents exist yet and creation will index it.
-            logger.info("qdrant_governance_index_skipped", error=str(exc))
+        for field_name in INDEXED_PAYLOAD_FIELDS:
+            try:
+                await self._client.create_payload_index(
+                    collection_name=self._collection_name,
+                    field_name=field_name,
+                    field_schema=qdrant_models.PayloadSchemaType.KEYWORD,
+                )
+            except Exception as exc:
+                # Already-indexed and missing-collection both land here and
+                # are both fine: the first is the steady state, the second
+                # means no documents exist yet and creation will index it.
+                logger.info("qdrant_payload_index_skipped", field=field_name, error=str(exc))
 
     async def upsert_batch(self, chunks: list[DocumentChunk], batch_size: int = 100) -> None:
         if not chunks:
@@ -90,24 +81,7 @@ class QdrantVectorRepository(VectorRepository):
             qdrant_models.PointStruct(
                 id=str(chunk.id),
                 vector=chunk.embedding,
-                payload={
-                    "chunk_id": str(chunk.id),
-                    "document_id": str(chunk.document_id),
-                    "user_id": str(chunk.user_id) if chunk.user_id else None,
-                    "content": chunk.content,
-                    "chunk_type": chunk.chunk_type.value,
-                    "position": chunk.position,
-                    "token_count": chunk.token_count,
-                    "page_number": chunk.chunk_metadata.page_number,
-                    "section": chunk.chunk_metadata.section,
-                    "contains_table": chunk.chunk_metadata.contains_table,
-                    "parent_chunk_id": str(chunk.parent_chunk_id) if chunk.parent_chunk_id else None,
-                    "domain": chunk.domain,
-                    "tags": chunk.tags,
-                    "file_type": chunk.file_type,
-                    "document_name": chunk.document_name,
-                    "sensitivity": chunk.sensitivity.value,
-                },
+                payload=chunk_to_payload(chunk),
             )
             for chunk in chunks
             if chunk.has_embedding()
@@ -119,6 +93,43 @@ class QdrantVectorRepository(VectorRepository):
             batch = points[i : i + batch_size]
             await self._client.upsert(collection_name=self._collection_name, points=batch)
         logger.info("qdrant_upserted", count=len(points), collection=self._collection_name)
+
+    async def set_payload_by_document(
+        self, document_id: uuid.UUID, payload: dict[str, Any]
+    ) -> None:
+        """Update selected payload keys on every point of one document.
+
+        A whole-point upsert cannot serve this: `upsert_batch` skips chunks
+        with no embedding, and a caller that reloaded chunks from Postgres
+        has none — so the upsert produced an empty point list and the change
+        never reached the vector store at all, silently. `set_payload` needs
+        no vector and touches only the named keys.
+        """
+        try:
+            await self._client.set_payload(
+                collection_name=self._collection_name,
+                payload=payload,
+                points=qdrant_models.FilterSelector(
+                    filter=qdrant_models.Filter(
+                        must=[
+                            qdrant_models.FieldCondition(
+                                key="document_id",
+                                match=qdrant_models.MatchValue(value=str(document_id)),
+                            )
+                        ]
+                    )
+                ),
+            )
+        except Exception as exc:
+            logger.warning(
+                "qdrant_set_payload_failed", document_id=str(document_id), error=str(exc)
+            )
+            return
+        logger.info(
+            "qdrant_payload_updated",
+            document_id=str(document_id),
+            fields=sorted(payload.keys()),
+        )
 
     async def search(
         self,
@@ -138,33 +149,7 @@ class QdrantVectorRepository(VectorRepository):
         scored_chunks = []
         for rank, result in enumerate(response.points):
             payload = result.payload or {}
-            chunk = DocumentChunk(
-                id=uuid.UUID(str(result.id)),
-                document_id=uuid.UUID(payload["document_id"]),
-                content=payload.get("content", ""),
-                position=payload.get("position", 0),
-                chunk_type=ChunkType(payload.get("chunk_type", "child")),
-                token_count=payload.get("token_count", 0),
-                parent_chunk_id=(
-                    uuid.UUID(payload["parent_chunk_id"]) if payload.get("parent_chunk_id") else None
-                ),
-                chunk_metadata=ChunkMetadata(
-                    page_number=payload.get("page_number"),
-                    section=payload.get("section"),
-                    contains_table=payload.get("contains_table", False),
-                ),
-                user_id=uuid.UUID(payload["user_id"]) if payload.get("user_id") else None,
-                domain=payload.get("domain"),
-                tags=payload.get("tags") or [],
-                file_type=payload.get("file_type"),
-                document_name=payload.get("document_name"),
-                # Points written before this field existed have no
-                # `sensitivity` key; Sensitivity.parse resolves those to
-                # INTERNAL rather than PUBLIC so legacy data fails closed.
-                sensitivity=Sensitivity.parse(
-                    payload.get("sensitivity"), Sensitivity.INTERNAL
-                ),
-            )
+            chunk = payload_to_chunk(payload, uuid.UUID(str(result.id)))
             scored_chunks.append(ScoredChunk(chunk=chunk, score=result.score, rank=rank + 1))
 
         return scored_chunks

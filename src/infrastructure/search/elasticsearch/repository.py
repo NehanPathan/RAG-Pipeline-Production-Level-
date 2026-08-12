@@ -1,22 +1,24 @@
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 from elasticsearch import AsyncElasticsearch
 
 from src.config import get_settings
-from src.domain.entities.document import ChunkMetadata, ChunkType, DocumentChunk
+from src.domain.entities.document import DocumentChunk
 from src.domain.repositories.search_repository import (
     BM25ScoredChunk,
     BM25SearchFilter,
     SearchRepository,
 )
 from src.domain.value_objects.sensitivity import Sensitivity
+from src.infrastructure.serialization.chunk_payload import chunk_to_payload, payload_to_chunk
 from src.monitoring.logger import get_logger
 
 logger = get_logger(__name__)
 
-INDEX_MAPPINGS = {
+INDEX_MAPPINGS: dict[str, Any] = {
     "mappings": {
         "properties": {
             "chunk_id": {"type": "keyword"},
@@ -28,7 +30,10 @@ INDEX_MAPPINGS = {
             "file_type": {"type": "keyword"},
             "document_name": {"type": "keyword"},
             "page_number": {"type": "integer"},
+            "position": {"type": "integer"},
             "section": {"type": "keyword"},
+            "section_title": {"type": "keyword"},
+            "heading_level": {"type": "integer"},
             "contains_table": {"type": "boolean"},
             "token_count": {"type": "integer"},
             "chunk_type": {"type": "keyword"},
@@ -58,6 +63,27 @@ class ElasticsearchSearchRepository(SearchRepository):
             )
             logger.info("elasticsearch_index_created", index=self._index_name)
 
+    async def ensure_mapping(self) -> None:
+        """Push new mapping properties onto an index that already exists.
+
+        `create_index_if_not_exists` short-circuits when the index is there,
+        so editing INDEX_MAPPINGS has no effect on any deployment that has
+        already ingested a document — the new field gets dynamically mapped
+        at best and silently mis-typed at worst. Called from startup; a
+        put_mapping that only adds properties is safe to run repeatedly.
+        """
+        try:
+            await self._client.indices.put_mapping(
+                index=self._index_name,
+                properties=INDEX_MAPPINGS["mappings"]["properties"],
+            )
+        except Exception as exc:
+            # Missing index is the normal case on a fresh deployment;
+            # create_index_if_not_exists will apply the full mapping instead.
+            logger.info("elasticsearch_mapping_skipped", index=self._index_name, error=str(exc))
+            return
+        logger.info("elasticsearch_mapping_ensured", index=self._index_name)
+
     async def index_batch(self, chunks: list[DocumentChunk], batch_size: int = 200) -> None:
         if not chunks:
             return
@@ -66,27 +92,10 @@ class ElasticsearchSearchRepository(SearchRepository):
         # in one request risks write timeouts, so chunk the request itself.
         for i in range(0, len(chunks), batch_size):
             batch = chunks[i : i + batch_size]
-            operations = []
+            operations: list[dict[str, Any]] = []
             for chunk in batch:
                 operations.append({"index": {"_index": self._index_name, "_id": str(chunk.id)}})
-                operations.append({
-                    "chunk_id": str(chunk.id),
-                    "document_id": str(chunk.document_id),
-                    "user_id": str(chunk.user_id) if chunk.user_id else None,
-                    "content": chunk.content,
-                    "chunk_type": chunk.chunk_type.value,
-                    "position": chunk.position,
-                    "token_count": chunk.token_count,
-                    "page_number": chunk.chunk_metadata.page_number,
-                    "section": chunk.chunk_metadata.section,
-                    "contains_table": chunk.chunk_metadata.contains_table,
-                    "parent_chunk_id": str(chunk.parent_chunk_id) if chunk.parent_chunk_id else None,
-                    "domain": chunk.domain,
-                    "tags": chunk.tags,
-                    "file_type": chunk.file_type,
-                    "document_name": chunk.document_name,
-                    "sensitivity": chunk.sensitivity.value,
-                })
+                operations.append(chunk_to_payload(chunk))
             response = await self._client.bulk(operations=operations, refresh=True)
             if response.get("errors"):
                 error_count += len([i for i in response["items"] if "error" in i.get("index", {})])
@@ -95,6 +104,42 @@ class ElasticsearchSearchRepository(SearchRepository):
             logger.warning("elasticsearch_bulk_errors", count=error_count)
         else:
             logger.info("elasticsearch_indexed", count=len(chunks), index=self._index_name)
+
+    async def update_fields_by_document(
+        self, document_id: uuid.UUID, fields: dict[str, Any]
+    ) -> int:
+        """Update selected fields on every chunk of one document.
+
+        Re-indexing the whole document body is not an option here: the
+        caller reloads chunks from Postgres, which is not the system of
+        record for the denormalized `user_id`/`domain`/`tags`/`file_type`/
+        `document_name` fields, so a full replace wrote them back as null and
+        made the document invisible to its own owner's BM25 filter.
+        """
+        script_source = (
+            "for (e in params.fields.entrySet()) { ctx._source[e.getKey()] = e.getValue(); }"
+        )
+        try:
+            response = await self._client.update_by_query(
+                index=self._index_name,
+                query={"term": {"document_id": str(document_id)}},
+                script={"source": script_source, "params": {"fields": fields}},
+                refresh=True,
+                conflicts="proceed",
+            )
+        except Exception as exc:
+            logger.warning(
+                "elasticsearch_update_failed", document_id=str(document_id), error=str(exc)
+            )
+            return 0
+        updated = int(response.get("updated", 0))
+        logger.info(
+            "elasticsearch_fields_updated",
+            document_id=str(document_id),
+            count=updated,
+            fields=sorted(fields.keys()),
+        )
+        return updated
 
     async def search(
         self,
@@ -121,28 +166,7 @@ class ElasticsearchSearchRepository(SearchRepository):
         result = []
         for rank, hit in enumerate(hits):
             src = hit["_source"]
-            chunk = DocumentChunk(
-                id=uuid.UUID(src["chunk_id"]),
-                document_id=uuid.UUID(src["document_id"]),
-                content=src.get("content", ""),
-                position=src.get("position", 0),
-                chunk_type=ChunkType(src.get("chunk_type", "child")),
-                token_count=src.get("token_count", 0),
-                parent_chunk_id=(
-                    uuid.UUID(src["parent_chunk_id"]) if src.get("parent_chunk_id") else None
-                ),
-                chunk_metadata=ChunkMetadata(
-                    page_number=src.get("page_number"),
-                    section=src.get("section"),
-                    contains_table=src.get("contains_table", False),
-                ),
-                user_id=uuid.UUID(src["user_id"]) if src.get("user_id") else None,
-                domain=src.get("domain"),
-                tags=src.get("tags") or [],
-                file_type=src.get("file_type"),
-                document_name=src.get("document_name"),
-                sensitivity=Sensitivity.parse(src.get("sensitivity"), Sensitivity.INTERNAL),
-            )
+            chunk = payload_to_chunk(src, uuid.UUID(str(src.get("chunk_id") or hit["_id"])))
             result.append(BM25ScoredChunk(chunk=chunk, bm25_score=hit["_score"], rank=rank + 1))
 
         return result

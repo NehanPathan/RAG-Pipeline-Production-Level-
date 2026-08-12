@@ -109,6 +109,14 @@ dev = [
     "factory-boy>=3.3.0",
     "faker>=33.0.0",
     "pytest-mock>=3.14.0",
+
+    # Lint and type-check. CI runs `uv sync --all-extras` then `uv run ruff`
+    # and `uv run mypy`, but neither tool was declared anywhere -- so both
+    # steps failed to resolve on a clean checkout. Declared here so the
+    # linters are part of the locked environment rather than an assumption
+    # about what happens to be on the runner.
+    "ruff>=0.8.0",
+    "mypy>=1.13.0",
 ]
 
 [tool.uv.sources]

@@ -29,6 +29,12 @@ class TextBlock:
     heading_level: int | None = None
     is_footnote: bool = False
     bbox: BoundingBox | None = None
+    # Mean per-word OCR confidence for blocks produced by an OCR provider,
+    # None for blocks that came from a native text layer. Carried per block
+    # rather than per document so ChunkValidator can judge each chunk on its
+    # own legibility -- a drawing with one illegible stamp should not lose
+    # its legible schedule.
+    ocr_confidence: float | None = None
 
 
 @dataclass
@@ -38,6 +44,7 @@ class TableBlock:
     caption: str = ""
     row_count: int = 0
     col_count: int = 0
+    bbox: BoundingBox | None = None
 
 
 @dataclass
