@@ -238,7 +238,7 @@ async def upload_document(
         "document_upload_received",
         doc_id=str(document.id),
         file=file.filename,
-        size=len(content),
+        size=stored.size_bytes,
         sensitivity=classification.value,
     )
     await audit_record(
