@@ -24,6 +24,7 @@ from src.api.routes import (
     governance,
     health,
     retrieval,
+    search,
 )
 from src.config import get_settings
 from src.governance.policy import get_policy
@@ -179,6 +180,7 @@ def create_app() -> FastAPI:
     app.include_router(chat.router, prefix="/api/v1", tags=["Chat"])
     app.include_router(conversations.router, prefix="/api/v1", tags=["Conversations"])
     app.include_router(retrieval.router, prefix="/api/v1", tags=["Retrieval"])
+    app.include_router(search.router, prefix="/api/v1", tags=["Search"])
     app.include_router(evaluation.router, prefix="/api/v1", tags=["Evaluation"])
     app.include_router(feedback.router, prefix="/api/v1", tags=["Feedback"])
     app.include_router(governance.router, prefix="/api/v1", tags=["Governance"])

@@ -4,6 +4,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
+from typing import Any
 
 from src.domain.value_objects.sensitivity import Sensitivity
 
@@ -28,8 +29,8 @@ class DocumentMetadata:
     tags: list[str] = field(default_factory=list)
     domain: str = "general"
     language: str = "en"
-    entities: list[dict] = field(default_factory=list)
-    custom_metadata: dict = field(default_factory=dict)
+    entities: list[dict[str, Any]] = field(default_factory=list)
+    custom_metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -117,7 +118,7 @@ class ChunkMetadata:
     page_number: int | None = None
     section: str | None = None
     contains_table: bool = False
-    table_data: dict | None = None
+    table_data: dict[str, Any] | None = None
     # Additive Phase 4A fields (Part 5) -- all optional so every existing
     # `ChunkMetadata(...)` construction site and test stays unaffected.
     # `section` (above) is pre-existing free-text; `section_title` is the
@@ -133,7 +134,7 @@ class ChunkMetadata:
     # the search payloads as `entity_canonicals`, which is what turns "which
     # chunks mention ISMB 300" into an exact keyword filter rather than a
     # semantic guess.
-    entities: list[dict] = field(default_factory=list)
+    entities: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass

@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 from src.routing.routes import Route, RouteDecision, RouteSource
 from src.tools.builtin.calculator import looks_arithmetic
@@ -83,7 +84,7 @@ class Rule:
     decide: Callable[[str], RouteDecision]
 
 
-def _decision(route: Route, reason: str, **args) -> RouteDecision:
+def _decision(route: Route, reason: str, **args: Any) -> RouteDecision:
     return RouteDecision(
         route=route, source=RouteSource.RULE, confidence=1.0, reason=reason, args=args
     )

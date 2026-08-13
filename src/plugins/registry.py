@@ -132,7 +132,7 @@ class PluginRegistry[T]:
     def specs(self) -> list[PluginSpec[T]]:
         return [self._specs[name] for name in self.names()]
 
-    def describe(self) -> list[dict]:
+    def describe(self) -> list[dict[str, Any]]:
         """Serialisable inventory — surfaced by GET /governance/plugins so
         what is actually loaded is inspectable at runtime."""
         return [

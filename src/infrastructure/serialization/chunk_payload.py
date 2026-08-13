@@ -91,6 +91,15 @@ def payload_to_chunk(payload: Mapping[str, Any], chunk_id: uuid.UUID) -> Documen
             section_title=payload.get("section_title"),
             heading_level=payload.get("heading_level"),
             contains_table=payload.get("contains_table", False),
+            # Canonical forms only. Provenance, attributes and confidence
+            # live in Postgres and are not worth carrying in a search
+            # payload -- but a retrieved chunk that could not say which
+            # designations it contains would make the entity filter's own
+            # results unexplainable.
+            entities=[
+                {"canonical": canonical}
+                for canonical in (payload.get("entity_canonicals") or [])
+            ],
         ),
         user_id=_optional_uuid(payload.get("user_id")),
         domain=payload.get("domain"),

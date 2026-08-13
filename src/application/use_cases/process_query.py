@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import AsyncIterator
+from typing import Any
 
 from src.governance.rbac import Principal
 from src.retrieval.pipeline import QueryPipeline
@@ -20,7 +21,7 @@ class ProcessQueryUseCase:
         query: str,
         user_id: uuid.UUID | None = None,
         principal: Principal | None = None,
-    ) -> AsyncIterator[dict]:
+    ) -> AsyncIterator[dict[str, Any]]:
         # `user_id` is kept for the tenant filter; `principal` carries the
         # clearance that bounds which classifications may be retrieved. When
         # a principal is supplied its user id is authoritative, since it was

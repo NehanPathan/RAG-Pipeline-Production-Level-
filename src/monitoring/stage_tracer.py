@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 from types import TracebackType
-from typing import Any
+from typing import Any, Literal
 
 from opentelemetry.trace import Status, StatusCode
 
@@ -69,7 +69,11 @@ class TracedStage:
         exc_type: type[BaseException] | None,
         exc: BaseException | None,
         tb: TracebackType | None,
-    ) -> bool:
+        # `Literal[False]`, not `bool`: this never suppresses an
+        # exception, and saying `bool` told every caller that it might --
+        # which makes a function whose `async with` block ends in a
+        # `return` look as though it can fall off the end.
+    ) -> Literal[False]:
         duration_seconds = time.perf_counter() - self._start
         duration_ms = int(duration_seconds * 1000)
         self._result["duration_ms"] = duration_ms

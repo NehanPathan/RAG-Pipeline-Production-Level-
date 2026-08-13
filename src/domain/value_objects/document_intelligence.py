@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any
 
 
 @dataclass
@@ -14,8 +15,8 @@ class SimilarityEdge:
 
 @dataclass
 class LayoutSummary:
-    headings: list[dict] = field(default_factory=list)
-    outline: list[dict] = field(default_factory=list)
+    headings: list[dict[str, Any]] = field(default_factory=list)
+    outline: list[dict[str, Any]] = field(default_factory=list)
     tables_count: int = 0
     figures_count: int = 0
     lists_count: int = 0

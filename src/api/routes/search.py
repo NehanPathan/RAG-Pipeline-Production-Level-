@@ -156,26 +156,14 @@ async def structured_search(
         filters.file_type = body.file_type
     if body.domain:
         filters.domain = body.domain
+    if body.entity_canonicals:
+        filters.entity_canonicals = body.entity_canonicals
+    if body.drawing_numbers:
+        filters.drawing_numbers = body.drawing_numbers
 
     results = await get_search_repository().search(
         body.query or "*", top_k=body.top_k, filters=filters
     )
-
-    # Applied after retrieval because they are not fields the BM25 filter
-    # shape carries; the alternative is widening that shape for two rarely
-    # used narrowings.
-    if body.drawing_numbers:
-        wanted_drawings = set(body.drawing_numbers)
-        results = [r for r in results if r.chunk.drawing_number in wanted_drawings]
-    if body.entity_canonicals:
-        wanted_entities = set(body.entity_canonicals)
-        results = [
-            r
-            for r in results
-            if wanted_entities & {
-                str(e.get("canonical")) for e in r.chunk.chunk_metadata.entities
-            }
-        ]
 
     return SearchResponse(
         items=[

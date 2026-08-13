@@ -68,7 +68,7 @@ class VectorRepository(ABC):
         ...
 
     @abstractmethod
-    async def get_collection_info(self) -> dict:
+    async def get_collection_info(self) -> dict[str, Any]:
         ...
 
     @abstractmethod

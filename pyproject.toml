@@ -245,6 +245,32 @@ known-first-party = ["src"]
 [tool.mypy]
 python_version = "3.12"
 strict = true
+# The packages that genuinely pass strict today. CI checks these, so a
+# regression in them fails the build.
+#
+# This is a deliberate scope, not a pretence that the rest is typed. `strict
+# = true` was set at the start of the project and never enforced -- mypy was
+# not even a declared dependency -- so the untouched packages carry roughly
+# 190 pre-existing errors, mostly missing return annotations on route
+# handlers and bare `dict` generics. A permanently red job gets ignored and
+# stops catching anything; a scoped one catches regressions in the code it
+# covers. Widening it, package by package, is tracked work rather than a
+# thing to leave silently failing.
+files = [
+    "src/domain",
+    "src/application",
+    "src/jobs",
+    "src/llm",
+    "src/monitoring",
+    "src/plugins",
+    "src/routing",
+    "src/retrieval/graph",
+    "src/ingestion/cad",
+    "src/ingestion/extractors",
+    "src/ingestion/enrichers",
+    "src/infrastructure/storage",
+    "src/infrastructure/serialization",
+]
 ignore_missing_imports = true
 plugins = ["pydantic.mypy"]
 

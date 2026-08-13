@@ -1,5 +1,6 @@
 import logging
 import sys
+from typing import cast
 
 import structlog
 
@@ -24,4 +25,6 @@ def configure_logging(log_level: str = "INFO") -> None:
 
 
 def get_logger(name: str) -> structlog.BoundLogger:
-    return structlog.get_logger(name)
+    # structlog.get_logger is untyped, so its result arrives as Any. The
+    # cast is where that stops, rather than leaking into every module.
+    return cast(structlog.BoundLogger, structlog.get_logger(name))

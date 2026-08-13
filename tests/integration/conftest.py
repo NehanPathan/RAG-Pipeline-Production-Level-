@@ -13,7 +13,7 @@ silently-skipped integration suite is indistinguishable from a passing one.
 
 from __future__ import annotations
 
-import socket
+import time
 import uuid
 from collections.abc import Iterator
 
@@ -54,10 +54,29 @@ def pytest_collection_modifyitems(config, items) -> None:
             item.add_marker(skip)
 
 
-def _free_port() -> int:
-    with socket.socket() as sock:
-        sock.bind(("", 0))
-        return int(sock.getsockname()[1])
+def _wait_for_http(url: str, timeout: float = 180.0, interval: float = 1.0) -> None:
+    """Poll an endpoint until it answers.
+
+    Log-line waits are unreliable here: Elasticsearch prints "started" while
+    still initialising, so a test that begins immediately afterwards gets
+    ServerDisconnectedError. Only a successful HTTP response actually proves
+    the service is ready, and it fails the same way whichever container is
+    slow that day.
+    """
+    import urllib.error
+    import urllib.request
+
+    deadline = time.monotonic() + timeout
+    last: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            with urllib.request.urlopen(url, timeout=5) as response:
+                if 200 <= response.status < 500:
+                    return
+        except Exception as exc:
+            last = exc
+        time.sleep(interval)
+    raise RuntimeError(f"{url} did not become ready within {timeout}s (last error: {last})")
 
 
 @pytest.fixture(scope="session")
@@ -74,21 +93,18 @@ def postgres_url() -> Iterator[str]:
 @pytest.fixture(scope="session")
 def qdrant_url() -> Iterator[str]:
     from testcontainers.core.container import DockerContainer
-    from testcontainers.core.waiting_utils import wait_for_logs
-
     container = DockerContainer("qdrant/qdrant:v1.12.4").with_exposed_ports(6333)
     with container:
-        wait_for_logs(container, "Actix runtime found", timeout=90)
         host = container.get_container_host_ip()
         port = container.get_exposed_port(6333)
-        yield f"http://{host}:{port}"
+        url = f"http://{host}:{port}"
+        _wait_for_http(f"{url}/readyz")
+        yield url
 
 
 @pytest.fixture(scope="session")
 def elasticsearch_url() -> Iterator[str]:
     from testcontainers.core.container import DockerContainer
-    from testcontainers.core.waiting_utils import wait_for_logs
-
     # A generic container rather than `ElasticSearchContainer`: that helper
     # is deprecated in testcontainers 4.x and no longer exposes `get_url`,
     # and it does not disable security, which the application's client is not
@@ -102,10 +118,13 @@ def elasticsearch_url() -> Iterator[str]:
         .with_env("ES_JAVA_OPTS", "-Xms512m -Xmx512m")
     )
     with container:
-        wait_for_logs(container, "started", timeout=180)
         host = container.get_container_host_ip()
         port = container.get_exposed_port(9200)
-        yield f"http://{host}:{port}"
+        url = f"http://{host}:{port}"
+        # Yellow, not green: a single-node cluster never reaches green
+        # because replicas cannot be allocated, and waiting for it times out.
+        _wait_for_http(f"{url}/_cluster/health?wait_for_status=yellow&timeout=60s")
+        yield url
 
 
 @pytest.fixture
@@ -167,7 +186,14 @@ async def es_repo(elasticsearch_url: str):
 
     from src.infrastructure.search.elasticsearch.repository import ElasticsearchSearchRepository
 
-    client = AsyncElasticsearch(hosts=[elasticsearch_url], request_timeout=30)
+    client = AsyncElasticsearch(
+        hosts=[elasticsearch_url],
+        request_timeout=30,
+        # Same reasoning as the production factory: a stale keep-alive
+        # connection must cost a retry, not a failed test.
+        max_retries=3,
+        retry_on_timeout=True,
+    )
     repo = ElasticsearchSearchRepository(
         client=client, index_name=f"chunks_{uuid.uuid4().hex[:8]}"
     )

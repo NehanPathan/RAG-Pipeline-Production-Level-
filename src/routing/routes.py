@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Any
 
 
 class Route(str, Enum):
@@ -73,9 +74,9 @@ class RouteDecision:
     reason: str = ""
     #: Arguments extracted during classification and handed to the tool, so a
     #: tool never has to re-parse the query the router already understood.
-    args: dict = field(default_factory=dict)
+    args: dict[str, Any] = field(default_factory=dict)
 
-    def as_dict(self) -> dict:
+    def as_dict(self) -> dict[str, Any]:
         return {
             "route": self.route.value,
             "source": self.source.value,

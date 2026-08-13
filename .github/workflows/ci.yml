@@ -28,7 +28,9 @@ jobs:
         with:
           version: "latest"
       - run: uv sync --all-extras
-      - run: uv run mypy src
+      # No path argument: the scope lives in pyproject.toml, so CI and a
+      # developer's local run check exactly the same thing.
+      - run: uv run mypy
 
   test:
     name: Unit Tests

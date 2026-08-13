@@ -272,6 +272,10 @@ class ElasticsearchSearchRepository(SearchRepository):
             clauses.append({"term": {"file_type": filters.file_type}})
         if filters.document_ids:
             clauses.append({"terms": {"document_id": [str(d) for d in filters.document_ids]}})
+        if filters.entity_canonicals:
+            clauses.append({"terms": {"entity_canonicals": filters.entity_canonicals}})
+        if filters.drawing_numbers:
+            clauses.append({"terms": {"drawing_number": filters.drawing_numbers}})
         if filters.sensitivity_in is not None:
             # Mirrors the Qdrant filter: documents indexed before the field
             # existed have no `sensitivity` and must not vanish from results
@@ -297,7 +301,16 @@ class ElasticsearchSearchRepository(SearchRepository):
 
 def create_elasticsearch_client() -> AsyncElasticsearch:
     settings = get_settings()
-    kwargs: dict = {"hosts": [settings.elasticsearch_url], "request_timeout": 60}
+    kwargs: dict[str, Any] = {
+        "hosts": [settings.elasticsearch_url],
+        "request_timeout": 60,
+        # A keep-alive connection that the server has already closed
+        # fails the next request with ServerDisconnectedError. Without a
+        # retry that surfaces as a 500 on a perfectly healthy cluster,
+        # most often after an idle period.
+        "max_retries": 3,
+        "retry_on_timeout": True,
+    }
     if settings.elasticsearch_username:
         kwargs["basic_auth"] = (settings.elasticsearch_username, settings.elasticsearch_password)
     return AsyncElasticsearch(**kwargs)

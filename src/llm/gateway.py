@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from typing import Any
 
 from src.governance import feature_flags
 from src.llm.pricing import estimate_cost_usd
@@ -227,7 +228,7 @@ class LLMGateway(LLMProvider):
             return
         gateway_cost_usd.labels(provider=binding.name, model=model).inc(cost)
 
-    def describe(self) -> dict:
+    def describe(self) -> dict[str, Any]:
         return {
             "role": self.role,
             "chain": [{"provider": b.name, "model": b.model_id} for b in self.chain],

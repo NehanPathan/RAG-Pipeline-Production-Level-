@@ -27,6 +27,13 @@ class BM25SearchFilter:
     # Restrict to current revisions. Defaults off so every existing caller
     # keeps its behaviour; the query pipeline turns it on.
     latest_only: bool = False
+    # Exact steel designations, matched against the indexed keyword
+    # field. Filtering here rather than after retrieval is the point of
+    # denormalising them: a post-filter can only narrow what top_k
+    # already returned, so a designation outside the first page of hits
+    # is invisible to it.
+    entity_canonicals: list[str] | None = None
+    drawing_numbers: list[str] | None = None
 
 
 @dataclass

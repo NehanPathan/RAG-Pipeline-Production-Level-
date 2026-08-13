@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+from typing import Any, cast
 
 from src.domain.entities.document import DocumentMetadata
+from src.llm.providers.base import LLMProvider
 from src.monitoring.logger import get_logger
 
 logger = get_logger(__name__)
@@ -24,7 +26,7 @@ JSON response:"""
 
 
 class LLMMetadataEnricher:
-    def __init__(self, llm_provider) -> None:
+    def __init__(self, llm_provider: LLMProvider) -> None:
         self._llm = llm_provider
 
     async def enrich(
@@ -64,18 +66,18 @@ class LLMMetadataEnricher:
             logger.warning("llm_enrichment_failed", file=file_name, error=str(e))
             return DocumentMetadata()
 
-    def _parse_json(self, text: str) -> dict:
+    def _parse_json(self, text: str) -> dict[str, Any]:
         text = text.strip()
         # Strip markdown code fences if present
         if text.startswith("```"):
             lines = text.split("\n")
             text = "\n".join(lines[1:-1])
         try:
-            return json.loads(text)
+            return cast(dict[str, Any], json.loads(text))
         except json.JSONDecodeError:
             # Try extracting JSON object
             start = text.find("{")
             end = text.rfind("}") + 1
             if start != -1 and end > start:
-                return json.loads(text[start:end])
+                return cast(dict[str, Any], json.loads(text[start:end]))
             return {}

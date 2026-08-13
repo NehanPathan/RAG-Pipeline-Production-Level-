@@ -4,6 +4,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+from typing import Any
 
 
 class MessageRole(str, Enum):
@@ -40,7 +41,7 @@ class Message:
     content: str
     id: uuid.UUID = field(default_factory=uuid.uuid4)
     citations: list[Citation] = field(default_factory=list)
-    retrieved_chunks: list[dict] = field(default_factory=list)
+    retrieved_chunks: list[dict[str, Any]] = field(default_factory=list)
     model_used: str = ""
     tokens_used: TokenUsage = field(default_factory=TokenUsage)
     latency_ms: int = 0
