@@ -171,6 +171,13 @@ dev = [
     # about what happens to be on the runner.
     "ruff>=0.8.0",
     "mypy>=1.13.0",
+
+    # Integration tests spin real Postgres, Qdrant and Elasticsearch.
+    # Everything else in the suite is mocked, which cannot catch a wrong
+    # Qdrant filter shape or an Elasticsearch mapping that silently
+    # analyses a keyword field -- both of which change what a query
+    # returns without changing any unit test.
+    "testcontainers>=4.8",
 ]
 
 [tool.uv.sources]
@@ -224,6 +231,13 @@ plugins = ["pydantic.mypy"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 addopts = "--cov=src --cov-report=term-missing --cov-fail-under=80"
+markers = [
+    # Integration tests need Docker. They are not deselected by default --
+    # they skip themselves loudly when Docker is absent, because a
+    # silently-excluded integration suite is indistinguishable from a
+    # passing one.
+    "integration: requires real Postgres, Qdrant and Elasticsearch",
+]
 
 [tool.coverage.run]
 source = ["src"]

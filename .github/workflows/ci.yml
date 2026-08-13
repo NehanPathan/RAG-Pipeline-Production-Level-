@@ -45,6 +45,28 @@ jobs:
           file: coverage.xml
           fail_ci_if_error: false
 
+  integration:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+      - run: uv sync --all-extras
+      # testcontainers starts real Postgres, Qdrant and Elasticsearch. The
+      # GitHub runner has a Docker daemon, so these actually execute here --
+      # unlike a developer machine without Docker, where they skip.
+      #
+      # `-p no:randomly` is deliberate: the session-scoped containers are
+      # expensive, and reordering tests across them buys nothing.
+      - run: uv run pytest tests/integration/ -v --no-cov
+        env:
+          # Elasticsearch's container needs more than the default heap the
+          # image assumes on a 2-core runner.
+          ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+
+
   governance:
     name: Governance Consistency
     runs-on: ubuntu-latest
