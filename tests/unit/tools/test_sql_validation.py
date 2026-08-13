@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+
 from src.tools.base import ToolError
 from src.tools.builtin.sql_query import _validate
 

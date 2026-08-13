@@ -5,6 +5,7 @@ import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 
+from src.domain.repositories.project_repository import ProjectRepository
 from src.domain.repositories.search_repository import BM25ScoredChunk
 from src.domain.repositories.vector_repository import ScoredChunk
 from src.domain.value_objects.context_bundle import CompressedChunk
@@ -105,6 +106,8 @@ class QueryPipeline:
         policy: AIPolicy | None = None,
         router: QueryRouter | None = None,
         direct_llm: LLMProvider | None = None,
+        project_repo: ProjectRepository | None = None,
+        latest_only: bool = True,
     ) -> None:
         self._query_agent = query_agent
         self._hybrid_retriever = hybrid_retriever
@@ -125,6 +128,11 @@ class QueryPipeline:
         # sending every query down the RAG path.
         self._router = router
         self._direct_llm = direct_llm
+        # Optional so every existing construction site and unit test keeps
+        # working: with no project repository the access scope is owner-only,
+        # exactly as it was before projects existed.
+        self._project_repo = project_repo
+        self._latest_only = latest_only
 
         from src.config import get_settings
 
@@ -138,6 +146,26 @@ class QueryPipeline:
         from src.retrieval.graph import build_query_graph
 
         self._graph = build_query_graph(self)
+
+    async def _project_ids_for(self, principal: Principal) -> list[uuid.UUID] | None:
+        """The caller's project memberships, or None when projects are unused.
+
+        Failure here is deliberately *closed*: if membership cannot be read,
+        the caller falls back to owner-only reach rather than to unfiltered
+        access. A degraded lookup must narrow what is visible, never widen it.
+        """
+        if self._project_repo is None or principal.user_id is None:
+            return None
+        try:
+            return await self._project_repo.member_project_ids(principal.user_id)
+        except Exception as exc:
+            logger.warning(
+                "project_scope_lookup_failed",
+                user_id=str(principal.user_id),
+                error=str(exc),
+                effect="falling back to owner-only reach",
+            )
+            return None
 
     def _general_knowledge_prompt(self, query: str) -> str:
         return _GENERAL_KNOWLEDGE_PROMPT.format(query=query)
@@ -382,12 +410,25 @@ class QueryPipeline:
         processed = await self._query_agent.process(query, user_id=user_id)
         query_processing_ms = int((time.perf_counter() - start) * 1000)
 
-        # MAP: overwrite whatever FilterGenerator produced for this field.
-        # The clearance allow-list is derived from the authenticated
-        # principal, never from the query or the LLM's interpretation of it.
+        # MAP: overwrite whatever FilterGenerator produced for these fields.
+        # Both are derived from the authenticated principal, never from the
+        # query or the LLM's interpretation of it.
+        #
+        # Clearance decides depth (which classifications may be read);
+        # access scope decides reach (whose documents are visible at all).
+        # They are independent, and both must pass -- a project member still
+        # cannot read a `restricted` document above their clearance.
         processed.filters.apply_clearance(
             Sensitivity.values_at_or_below(principal.clearance)
         )
+        processed.filters.apply_access_scope(
+            user_id=user_id, project_ids=await self._project_ids_for(principal)
+        )
+
+        # Answering from a superseded drawing is worse than not answering, so
+        # current revisions are the default. Documents that are not revisions
+        # of anything are current by definition and are unaffected.
+        processed.filters.latest_only = self._latest_only
 
         vector_results, bm25_results, trace = await self._hybrid_retriever.retrieve(
             queries=processed.all_queries,

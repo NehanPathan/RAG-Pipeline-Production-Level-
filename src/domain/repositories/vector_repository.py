@@ -11,6 +11,11 @@ from src.domain.entities.document import DocumentChunk
 @dataclass
 class VectorSearchFilter:
     user_id: uuid.UUID | None = None
+    # Reachability, read as a disjunction with `user_id`: a chunk matches if
+    # the caller owns it OR it belongs to one of these projects. Both halves
+    # are set together from the Principal (see
+    # MetadataFilterSpec.apply_access_scope).
+    project_ids: list[uuid.UUID] | None = None
     domain: str | None = None
     tags: list[str] | None = None
     file_type: str | None = None
@@ -20,6 +25,9 @@ class VectorSearchFilter:
     # store so over-classified chunks never enter the candidate set and
     # cannot consume top_k slots from chunks the caller may actually read.
     sensitivity_in: list[str] | None = None
+    # Restrict to current revisions. Defaults off so every existing caller
+    # keeps its behaviour; the query pipeline turns it on.
+    latest_only: bool = False
 
 
 @dataclass

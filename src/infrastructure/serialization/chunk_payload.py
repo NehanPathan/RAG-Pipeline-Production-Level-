@@ -45,6 +45,12 @@ def chunk_to_payload(chunk: DocumentChunk) -> dict[str, Any]:
         "file_type": chunk.file_type,
         "document_name": chunk.document_name,
         "sensitivity": chunk.sensitivity.value,
+        "project_id": str(chunk.project_id) if chunk.project_id else None,
+        "project_number": chunk.project_number,
+        "drawing_id": str(chunk.drawing_id) if chunk.drawing_id else None,
+        "drawing_number": chunk.drawing_number,
+        "revision_label": chunk.revision_label,
+        "is_latest": chunk.is_latest,
         # Canonical forms only, as a flat keyword list. The full entity
         # records (provenance, attributes, confidence) stay in Postgres --
         # what a search backend needs is something exactly matchable, and
@@ -91,6 +97,14 @@ def payload_to_chunk(payload: Mapping[str, Any], chunk_id: uuid.UUID) -> Documen
         tags=payload.get("tags") or [],
         file_type=payload.get("file_type"),
         document_name=payload.get("document_name"),
+        project_id=_optional_uuid(payload.get("project_id")),
+        project_number=payload.get("project_number"),
+        drawing_id=_optional_uuid(payload.get("drawing_id")),
+        drawing_number=payload.get("drawing_number"),
+        revision_label=payload.get("revision_label"),
+        # Rows written before revisions existed have no flag and are current
+        # by definition: nothing supersedes them.
+        is_latest=bool(payload.get("is_latest", True)),
         # Rows written before this field existed have no `sensitivity` key;
         # Sensitivity.parse resolves those to INTERNAL rather than PUBLIC so
         # legacy data fails closed.

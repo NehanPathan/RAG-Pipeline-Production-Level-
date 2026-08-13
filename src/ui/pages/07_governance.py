@@ -7,10 +7,11 @@ measure / manage, not in terms of which route returns which JSON.
 
 import os
 
-from src.ui import http as httpx
-from src.ui.auth import require_auth
 import pandas as pd
 import streamlit as st
+
+from src.ui import http as httpx
+from src.ui.auth import require_auth
 
 st.set_page_config(page_title="Governance", layout="wide")
 

@@ -124,6 +124,13 @@ class IngestionPipeline:
                 # every chunk derived from it carries that label into Qdrant
                 # and Elasticsearch so retrieval can filter on it.
                 chunk.sensitivity = document.sensitivity
+                # Access scope and revision state, inherited for the same
+                # reason: both are filtered on inside the search backends,
+                # before any candidate reaches the application.
+                chunk.project_id = document.project_id
+                chunk.drawing_id = document.drawing_id
+                chunk.revision_label = document.revision_label
+                chunk.is_latest = document.is_latest
 
             # Step 4: Generate embeddings in batch (retrieval-role provider)
             retrieval_provider = self._embedding_strategy.retrieval_provider

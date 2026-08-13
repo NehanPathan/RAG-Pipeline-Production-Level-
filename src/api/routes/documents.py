@@ -16,13 +16,14 @@ from src.api.dependencies import (
     get_search_repository,
     get_vector_repository,
 )
+from src.api.dependencies_rate_limit import rate_limit_role
 from src.config import get_settings
 from src.domain.entities.document import Document, DocumentChunk
 from src.domain.value_objects.document_intelligence import DocumentIntelligenceSummary
 from src.domain.value_objects.sensitivity import Sensitivity
-from src.governance.audit import AuditAction, AuditOutcome, record as audit_record
+from src.governance.audit import AuditAction, AuditOutcome
+from src.governance.audit import record as audit_record
 from src.governance.policy import get_policy
-from src.api.dependencies_rate_limit import rate_limit_role
 from src.governance.rbac import Principal, Role, get_principal, require_role
 from src.governance.runtime_flags import get_flags
 from src.ingestion.pipeline import IngestionPipeline

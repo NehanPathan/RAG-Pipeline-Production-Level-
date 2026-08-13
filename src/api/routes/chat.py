@@ -13,9 +13,9 @@ from src.api.dependencies import (
     get_online_evaluator,
     get_query_pipeline,
 )
+from src.api.dependencies_rate_limit import rate_limit
 from src.application.use_cases.process_query import ProcessQueryUseCase
 from src.domain.entities.conversation import Citation, Message, MessageRole
-from src.api.dependencies_rate_limit import rate_limit
 from src.governance.rbac import Principal
 from src.monitoring.logger import get_logger
 from src.monitoring.tracing import get_current_trace_id

@@ -3,10 +3,11 @@ from __future__ import annotations
 import os
 import time
 
-from src.ui import http as httpx
-from src.ui.auth import require_auth
 import plotly.graph_objects as go
 import streamlit as st
+
+from src.ui import http as httpx
+from src.ui.auth import require_auth
 
 st.set_page_config(page_title="Evaluation Dashboard", layout="wide")
 

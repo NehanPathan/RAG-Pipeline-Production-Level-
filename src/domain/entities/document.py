@@ -58,6 +58,33 @@ class Document:
     sensitivity: Sensitivity = Sensitivity.INTERNAL
     retention_until: datetime | None = None
 
+    # Project scope. None means personal: readable by `user_id` alone.
+    project_id: uuid.UUID | None = None
+
+    # Revision identity. All optional -- a specification is a document
+    # without being a revision of a drawing.
+    drawing_id: uuid.UUID | None = None
+    revision_label: str | None = None
+    revision_index: int | None = None
+    revision_date: datetime | None = None
+    revision_note: str | None = None
+    is_latest: bool = True
+    superseded_by_document_id: uuid.UUID | None = None
+    superseded_at: datetime | None = None
+
+    def supersede(self, by_document_id: uuid.UUID, when: datetime | None = None) -> None:
+        """Mark this revision as no longer current.
+
+        Recording *which* document replaced it, not merely that something
+        did, is what lets the UI offer "superseded by Rev C" instead of a
+        dead end -- and what lets a reader who followed an old citation find
+        the current sheet.
+        """
+        self.is_latest = False
+        self.superseded_by_document_id = by_document_id
+        self.superseded_at = when or datetime.utcnow()
+        self.updated_at = datetime.utcnow()
+
     def classify(self, sensitivity: Sensitivity, retention_days: int | None = None) -> None:
         """Set the classification and, optionally, the retention deadline."""
         self.sensitivity = sensitivity
@@ -133,6 +160,19 @@ class DocumentChunk:
     tags: list[str] = field(default_factory=list)
     file_type: str | None = None
     document_name: str | None = None
+
+    # Project and revision identity, denormalized for the same reason as the
+    # fields above: retrieval filters on them inside Qdrant/Elasticsearch,
+    # before any candidate reaches the application.
+    project_id: uuid.UUID | None = None
+    project_number: str | None = None
+    drawing_id: uuid.UUID | None = None
+    drawing_number: str | None = None
+    revision_label: str | None = None
+    # Current revision of its drawing. True for documents that are not
+    # revisions of anything, which is the correct reading: nothing supersedes
+    # them.
+    is_latest: bool = True
 
     # Denormalized from Document.sensitivity at ingestion time for the same
     # reason as the fields above: retrieval must be able to filter on

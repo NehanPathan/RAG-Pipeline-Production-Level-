@@ -39,9 +39,32 @@ class MetadataFilterSpec:
     # an LLM can influence is not an access-control filter.
     sensitivity_in: list[str] | None = None
 
+    # Governance MAP, second dimension: the projects the caller belongs to.
+    # Set from the Principal alongside `sensitivity_in`, and read together
+    # with `user_id` as a disjunction -- a chunk is reachable if the caller
+    # owns it OR it belongs to one of their projects. Never LLM-derived.
+    project_ids: list[uuid.UUID] | None = None
+
+    # Revision scope. Defaults to current sheets only, because answering from
+    # a superseded drawing is worse than not answering. Not a security
+    # control, so `security_only()` deliberately drops it.
+    latest_only: bool = False
+
     def apply_clearance(self, allowed_values: list[str]) -> None:
         """Force the classification allow-list, discarding any prior value."""
         self.sensitivity_in = list(allowed_values)
+
+    def apply_access_scope(
+        self, user_id: uuid.UUID | None, project_ids: list[uuid.UUID] | None
+    ) -> None:
+        """Force the reachability scope, discarding any prior value.
+
+        Owner-or-project-member, applied as one unit. Setting only half of it
+        would either hide a caller's own documents or expose a project they
+        are not in, so both are written together from the Principal.
+        """
+        self.user_id = user_id
+        self.project_ids = list(project_ids) if project_ids else None
 
     @property
     def has_soft_filters(self) -> bool:
@@ -64,6 +87,7 @@ class MetadataFilterSpec:
         """
         return MetadataFilterSpec(
             user_id=self.user_id,
+            project_ids=self.project_ids,
             document_ids=self.document_ids,
             sensitivity_in=self.sensitivity_in,
         )
@@ -72,22 +96,26 @@ class MetadataFilterSpec:
         self._warn_unsupported()
         return VectorSearchFilter(
             user_id=self.user_id,
+            project_ids=self.project_ids,
             domain=self.domain,
             tags=self.tags,
             file_type=self.file_type,
             document_ids=self.document_ids,
             sensitivity_in=self.sensitivity_in,
+            latest_only=self.latest_only,
         )
 
     def to_bm25_filter(self) -> BM25SearchFilter:
         self._warn_unsupported()
         return BM25SearchFilter(
             user_id=self.user_id,
+            project_ids=self.project_ids,
             domain=self.domain,
             tags=self.tags,
             file_type=self.file_type,
             document_ids=self.document_ids,
             sensitivity_in=self.sensitivity_in,
+            latest_only=self.latest_only,
         )
 
     def _warn_unsupported(self) -> None:

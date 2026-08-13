@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import FrozenInstanceError
 
 import pytest
+
 from src.domain.value_objects.sensitivity import Sensitivity
 from src.governance.policy import EnforcementMode, get_policy, reset_policy
 

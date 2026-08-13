@@ -233,7 +233,7 @@ def _live_email_verified(uid: str) -> bool:
         from src.auth.firebase import get_verifier
 
         verifier = get_verifier()
-        app = verifier._ensure_app()  # noqa: SLF001 - same package, single caller
+        app = verifier._ensure_app()
         return bool(firebase_auth.get_user(uid, app=app).email_verified)
     except Exception as exc:
         logger.warning("live_email_verification_failed", uid=uid, error=str(exc))

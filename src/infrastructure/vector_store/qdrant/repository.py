@@ -31,6 +31,9 @@ INDEXED_PAYLOAD_FIELDS = (
     "file_type",
     "sensitivity",
     "entity_canonicals",
+    "project_id",
+    "drawing_id",
+    "is_latest",
 )
 
 
@@ -195,11 +198,45 @@ class QdrantVectorRepository(VectorRepository):
         if filters is None:
             return None
         conditions = []
-        if filters.user_id:
+        # Reachability: owner OR project member. Expressed as one `should`
+        # group inside `must`, so it narrows the result set as a unit -- two
+        # separate `must` conditions would mean "owned AND in a project",
+        # which hides every document a caller owns outside their projects.
+        if filters.user_id or filters.project_ids:
+            reachable: list[qdrant_models.Condition] = []
+            if filters.user_id:
+                reachable.append(
+                    qdrant_models.FieldCondition(
+                        key="user_id",
+                        match=qdrant_models.MatchValue(value=str(filters.user_id)),
+                    )
+                )
+            if filters.project_ids:
+                reachable.append(
+                    qdrant_models.FieldCondition(
+                        key="project_id",
+                        match=qdrant_models.MatchAny(
+                            any=[str(p) for p in filters.project_ids]
+                        ),
+                    )
+                )
+            conditions.append(qdrant_models.Filter(should=reachable))
+
+        if filters.latest_only:
+            # Points written before revisions existed have no `is_latest`
+            # key. They are current by definition -- there is nothing that
+            # supersedes them -- so a bare match would hide the entire
+            # pre-revision corpus.
             conditions.append(
-                qdrant_models.FieldCondition(
-                    key="user_id",
-                    match=qdrant_models.MatchValue(value=str(filters.user_id)),
+                qdrant_models.Filter(
+                    should=[
+                        qdrant_models.FieldCondition(
+                            key="is_latest", match=qdrant_models.MatchValue(value=True)
+                        ),
+                        qdrant_models.IsNullCondition(
+                            is_null=qdrant_models.PayloadField(key="is_latest")
+                        ),
+                    ]
                 )
             )
         if filters.domain:

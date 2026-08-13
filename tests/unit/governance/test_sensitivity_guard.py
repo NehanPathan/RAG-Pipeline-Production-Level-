@@ -4,6 +4,7 @@ import uuid
 from dataclasses import dataclass
 
 import pytest
+
 from src.domain.entities.document import DocumentChunk
 from src.domain.value_objects.sensitivity import Sensitivity
 from src.governance.sensitivity_guard import SensitivityGuard

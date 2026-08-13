@@ -56,6 +56,12 @@ class PostgresChunkRepository(ChunkRepository):
                         tags=chunk.tags or None,
                         file_type=chunk.file_type,
                         document_name=chunk.document_name,
+                        project_id=chunk.project_id,
+                        project_number=chunk.project_number,
+                        drawing_id=chunk.drawing_id,
+                        drawing_number=chunk.drawing_number,
+                        revision_label=chunk.revision_label,
+                        is_latest=chunk.is_latest,
                     )
                 )
             await session.commit()
@@ -145,4 +151,12 @@ def _to_entity(model: DocumentChunkModel) -> DocumentChunk:
         tags=list(model.tags) if model.tags else [],
         file_type=model.file_type,
         document_name=model.document_name,
+        project_id=model.project_id,
+        project_number=model.project_number,
+        drawing_id=model.drawing_id,
+        drawing_number=model.drawing_number,
+        revision_label=model.revision_label,
+        # Rows predating revisions have no flag and are current by
+        # definition: nothing supersedes them.
+        is_latest=bool(model.is_latest) if model.is_latest is not None else True,
     )

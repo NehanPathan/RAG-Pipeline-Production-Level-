@@ -1,9 +1,10 @@
 import os
 import time
 
+import streamlit as st
+
 from src.ui import http as httpx
 from src.ui.auth import require_auth
-import streamlit as st
 
 st.set_page_config(page_title="Document Management", layout="wide")
 

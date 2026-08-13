@@ -397,16 +397,15 @@ def _render_login() -> None:
 
     tab_in, tab_up, tab_reset = st.tabs(["Sign in", "Create account", "Reset password"])
 
-    with tab_in:
-        with st.form("sign_in"):
-            email = st.text_input("Email")
-            password = st.text_input("Password", type="password")
-            if st.form_submit_button("Sign in", type="primary", use_container_width=True):
-                try:
-                    st.session_state[SESSION_KEY] = sign_in(email.strip(), password)
-                    st.rerun()
-                except AuthError as exc:
-                    st.error(str(exc))
+    with tab_in, st.form("sign_in"):
+        email = st.text_input("Email")
+        password = st.text_input("Password", type="password")
+        if st.form_submit_button("Sign in", type="primary", use_container_width=True):
+            try:
+                st.session_state[SESSION_KEY] = sign_in(email.strip(), password)
+                st.rerun()
+            except AuthError as exc:
+                st.error(str(exc))
 
     with tab_up:
         with st.form("sign_up"):
@@ -429,12 +428,11 @@ def _render_login() -> None:
             "administrator grants higher clearance separately."
         )
 
-    with tab_reset:
-        with st.form("reset"):
-            email = st.text_input("Email", key="reset_email")
-            if st.form_submit_button("Send reset link", use_container_width=True):
-                try:
-                    send_password_reset(email.strip())
-                    st.success("If that account exists, a reset link is on its way.")
-                except AuthError as exc:
-                    st.error(str(exc))
+    with tab_reset, st.form("reset"):
+        email = st.text_input("Email", key="reset_email")
+        if st.form_submit_button("Send reset link", use_container_width=True):
+            try:
+                send_password_reset(email.strip())
+                st.success("If that account exists, a reset link is on its way.")
+            except AuthError as exc:
+                st.error(str(exc))

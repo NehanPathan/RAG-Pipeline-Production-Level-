@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 
@@ -56,7 +56,7 @@ class RetentionService:
     async def find_expired(self, now: datetime | None = None) -> list[uuid.UUID]:
         from src.infrastructure.database.postgres.models import DocumentModel
 
-        cutoff = now or datetime.now(timezone.utc)
+        cutoff = now or datetime.now(UTC)
         session_factory = get_session_factory()
         async with session_factory() as session:
             result = await session.execute(

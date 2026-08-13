@@ -6,7 +6,8 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from src.governance.audit import AuditAction, AuditOutcome, record as audit_record
+from src.governance.audit import AuditAction, AuditOutcome
+from src.governance.audit import record as audit_record
 from src.governance.rbac import Principal, Role, require_role
 from src.governance.runtime_flags import SETTINGS_KEY as FLAGS_KEY
 from src.infrastructure.database.postgres.connection import get_session_factory

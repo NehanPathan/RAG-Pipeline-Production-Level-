@@ -26,12 +26,76 @@ def test_build_filter_returns_none_when_no_filters(repo):
     assert repo._build_filter(None) is None
 
 
+def _condition_keys(qdrant_filter) -> set[str]:
+    """Flatten one level of nesting.
+
+    The reachability clause is a `should` group inside `must` -- owner OR
+    project member -- so its keys are one level down from the flat
+    conditions.
+    """
+    keys: set[str] = set()
+    for condition in qdrant_filter.must or []:
+        if getattr(condition, "key", None) is not None:
+            keys.add(condition.key)
+        for nested in getattr(condition, "should", None) or []:
+            if getattr(nested, "key", None) is not None:
+                keys.add(nested.key)
+    return keys
+
+
 def test_build_filter_includes_user_id(repo):
     user_id = uuid.uuid4()
     result = repo._build_filter(VectorSearchFilter(user_id=user_id))
 
-    keys = [c.key for c in result.must]
-    assert "user_id" in keys
+    assert "user_id" in _condition_keys(result)
+
+
+class TestAccessScope:
+    """Reachability is owner OR project member, and it must narrow as a unit.
+
+    Two separate `must` conditions would mean "owned AND in a project", which
+    hides every document a caller owns outside their projects.
+    """
+
+    def test_owner_and_projects_are_one_should_group(self, repo):
+        result = repo._build_filter(
+            VectorSearchFilter(user_id=uuid.uuid4(), project_ids=[uuid.uuid4()])
+        )
+
+        groups = [c for c in result.must if getattr(c, "should", None)]
+        reachability = [g for g in groups if {n.key for n in g.should} == {"user_id", "project_id"}]
+        assert len(reachability) == 1, "owner and project must share one should group"
+
+    def test_projects_alone_still_filter(self, repo):
+        result = repo._build_filter(VectorSearchFilter(project_ids=[uuid.uuid4()]))
+
+        assert "project_id" in _condition_keys(result)
+
+    def test_no_scope_produces_no_reachability_clause(self, repo):
+        result = repo._build_filter(VectorSearchFilter(domain="HR"))
+
+        assert "user_id" not in _condition_keys(result)
+        assert "project_id" not in _condition_keys(result)
+
+
+class TestLatestOnly:
+    def test_latest_only_admits_rows_predating_revisions(self, repo):
+        """Points indexed before revisions existed carry no `is_latest` key
+        and are current by definition; a bare match would hide the entire
+        pre-revision corpus."""
+        result = repo._build_filter(VectorSearchFilter(latest_only=True))
+
+        groups = [c for c in result.must if getattr(c, "should", None)]
+        latest = [g for g in groups if any(getattr(n, "key", "") == "is_latest" for n in g.should)]
+        assert latest, "is_latest must be filtered"
+        assert any(
+            getattr(n, "is_null", None) is not None for n in latest[0].should
+        ), "missing is_latest must be treated as current"
+
+    def test_off_by_default(self, repo):
+        result = repo._build_filter(VectorSearchFilter(domain="HR"))
+
+        assert "is_latest" not in _condition_keys(result)
 
 
 def test_build_filter_includes_file_type(repo):
@@ -60,8 +124,13 @@ def test_build_filter_combines_all_conditions(repo):
         )
     )
 
-    keys = {c.key for c in result.must}
-    assert keys == {"user_id", "domain", "tags", "file_type", "document_id"}
+    assert _condition_keys(result) == {
+        "user_id",
+        "domain",
+        "tags",
+        "file_type",
+        "document_id",
+    }
 
 
 @pytest.mark.asyncio

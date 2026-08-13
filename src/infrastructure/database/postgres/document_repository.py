@@ -32,6 +32,15 @@ class PostgresDocumentRepository(DocumentRepository):
                     loader_used=document.loader_used,
                     sensitivity=document.sensitivity.value,
                     retention_until=document.retention_until,
+                    project_id=document.project_id,
+                    drawing_id=document.drawing_id,
+                    revision_label=document.revision_label,
+                    revision_index=document.revision_index,
+                    revision_date=document.revision_date,
+                    revision_note=document.revision_note,
+                    is_latest=document.is_latest,
+                    superseded_by_document_id=document.superseded_by_document_id,
+                    superseded_at=document.superseded_at,
                 )
             )
             await session.commit()
@@ -121,6 +130,18 @@ class PostgresDocumentRepository(DocumentRepository):
             model.indexed_at = document.indexed_at
             model.sensitivity = document.sensitivity.value
             model.retention_until = document.retention_until
+            # Revision state changes after ingestion -- RegisterRevision
+            # supersedes the previous current sheet through this path -- so
+            # these must be part of the update, not only the insert.
+            model.project_id = document.project_id
+            model.drawing_id = document.drawing_id
+            model.revision_label = document.revision_label
+            model.revision_index = document.revision_index
+            model.revision_date = document.revision_date
+            model.revision_note = document.revision_note
+            model.is_latest = document.is_latest
+            model.superseded_by_document_id = document.superseded_by_document_id
+            model.superseded_at = document.superseded_at
 
             metadata_model = (
                 await session.execute(
@@ -172,6 +193,15 @@ def _to_entity(model: DocumentModel) -> Document:
         # the fail-closed reading, matching Sensitivity.parse's contract.
         sensitivity=Sensitivity.parse(model.sensitivity, Sensitivity.INTERNAL),
         retention_until=model.retention_until,
+        project_id=model.project_id,
+        drawing_id=model.drawing_id,
+        revision_label=model.revision_label,
+        revision_index=model.revision_index,
+        revision_date=model.revision_date,
+        revision_note=model.revision_note,
+        is_latest=bool(model.is_latest) if model.is_latest is not None else True,
+        superseded_by_document_id=model.superseded_by_document_id,
+        superseded_at=model.superseded_at,
     )
     if model.metadata_record:
         document.metadata = DocumentMetadata(

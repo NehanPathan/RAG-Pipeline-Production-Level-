@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi import status as http_status
@@ -197,7 +197,7 @@ async def list_audit_log(
     """
     from src.infrastructure.database.postgres.models import AuditLogModel
 
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    cutoff = datetime.now(UTC) - timedelta(hours=hours)
     stmt = (
         select(AuditLogModel)
         .where(AuditLogModel.created_at >= cutoff)

@@ -1,7 +1,7 @@
 import asyncio
 import os
 import uuid
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 # Unit tests must not contact anything outside this process.
 #
@@ -22,15 +22,16 @@ os.environ["LANGFUSE_SECRET_KEY"] = ""
 os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = ""
 os.environ["OTEL_SDK_DISABLED"] = "true"
 
-import pytest  # noqa: E402
+from pathlib import Path
 
-from src.domain.entities.document import Document, DocumentStatus  # noqa: E402
-from src.ingestion.chunkers.parent_child_chunker import (  # noqa: E402
+import pytest
+
+from src.domain.entities.document import Document, DocumentStatus
+from src.ingestion.chunkers.parent_child_chunker import (
     ChunkingConfig,
     ParentChildChunker,
 )
-from src.ingestion.loaders.base import RawDocument, TableBlock, TextBlock  # noqa: E402
-from pathlib import Path  # noqa: E402
+from src.ingestion.loaders.base import RawDocument, TableBlock, TextBlock
 
 
 @pytest.fixture(scope="session")

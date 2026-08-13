@@ -40,6 +40,12 @@ INDEX_MAPPINGS: dict[str, Any] = {
             "parent_chunk_id": {"type": "keyword"},
             "sensitivity": {"type": "keyword"},
             "entity_canonicals": {"type": "keyword"},
+            "project_id": {"type": "keyword"},
+            "project_number": {"type": "keyword"},
+            "drawing_id": {"type": "keyword"},
+            "drawing_number": {"type": "keyword"},
+            "revision_label": {"type": "keyword"},
+            "is_latest": {"type": "boolean"},
         }
     },
     "settings": {
@@ -191,8 +197,37 @@ class ElasticsearchSearchRepository(SearchRepository):
         if filters is None:
             return []
         clauses = []
-        if filters.user_id:
-            clauses.append({"term": {"user_id": str(filters.user_id)}})
+        # Reachability: owner OR project member, as one bool/should clause so
+        # it narrows as a unit. Two separate filter clauses would mean "owned
+        # AND in a project", hiding every document a caller owns outside
+        # their projects. Mirrors the Qdrant filter exactly -- if the two
+        # backends disagree, hybrid retrieval leaks through whichever is
+        # looser.
+        if filters.user_id or filters.project_ids:
+            reachable: list[dict] = []
+            if filters.user_id:
+                reachable.append({"term": {"user_id": str(filters.user_id)}})
+            if filters.project_ids:
+                reachable.append(
+                    {"terms": {"project_id": [str(p) for p in filters.project_ids]}}
+                )
+            clauses.append({"bool": {"should": reachable, "minimum_should_match": 1}})
+
+        if filters.latest_only:
+            # Documents indexed before revisions existed have no `is_latest`
+            # field and are current by definition; a bare term filter would
+            # hide the whole pre-revision corpus.
+            clauses.append(
+                {
+                    "bool": {
+                        "should": [
+                            {"term": {"is_latest": True}},
+                            {"bool": {"must_not": {"exists": {"field": "is_latest"}}}},
+                        ],
+                        "minimum_should_match": 1,
+                    }
+                }
+            )
         if filters.domain:
             clauses.append({"term": {"domain": filters.domain}})
         if filters.tags:

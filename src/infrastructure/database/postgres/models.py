@@ -14,6 +14,7 @@ from sqlalchemy import (
     SmallInteger,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
@@ -59,6 +60,95 @@ class APIKeyModel(Base):
     user: Mapped[UserModel] = relationship("UserModel", back_populates="api_keys")
 
 
+
+class ProjectModel(Base):
+    """A job.
+
+    Steel work is organised by project, and a project is the unit engineers
+    share with one another -- which is why it is an access scope and not
+    merely a label.
+    """
+
+    __tablename__ = "projects"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_number: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    client_name: Mapped[str | None] = mapped_column(String(255))
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
+    start_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    target_completion_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Uploads into this project take this classification unless told
+    # otherwise, so a project handling restricted work does not depend on
+    # every uploader remembering to say so.
+    default_sensitivity: Mapped[str | None] = mapped_column(String(20))
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    members: Mapped[list[ProjectMemberModel]] = relationship(
+        "ProjectMemberModel", back_populates="project", passive_deletes=True
+    )
+
+    __table_args__ = (Index("ix_projects_status", "status"),)
+
+
+class ProjectMemberModel(Base):
+    __tablename__ = "project_members"
+
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), primary_key=True
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    project_role: Mapped[str] = mapped_column(String(20), nullable=False, default="reader")
+    added_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    project: Mapped[ProjectModel] = relationship("ProjectModel", back_populates="members")
+
+    # Which projects a user belongs to is looked up on every retrieval, to
+    # build the access scope. That is the hot direction here, not the
+    # membership list of a given project.
+    __table_args__ = (Index("ix_project_members_user", "user_id"),)
+
+
+class DrawingModel(Base):
+    """The stable identity of a drawing across its revisions.
+
+    S-104 is one drawing; Rev A, Rev B and Rev C are three documents. Without
+    this row there is nothing for "the current version of S-104" to mean.
+    """
+
+    __tablename__ = "drawings"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE")
+    )
+    drawing_number: Mapped[str] = mapped_column(String(64), nullable=False)
+    sheet_number: Mapped[str | None] = mapped_column(String(32))
+    discipline: Mapped[str | None] = mapped_column(String(32))
+    title: Mapped[str | None] = mapped_column(String(500))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id", "drawing_number", "sheet_number", name="uq_drawings_identity"
+        ),
+        Index("ix_drawings_number", "drawing_number"),
+    )
+
+
 class DocumentModel(Base):
     __tablename__ = "documents"
 
@@ -83,6 +173,32 @@ class DocumentModel(Base):
     # unclassified document must not be treated as public.
     sensitivity: Mapped[str | None] = mapped_column(String(20))
     retention_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # Project scope. NULL means "personal": visible to documents.user_id and
+    # to nobody else. Existing rows migrate as NULL, so the migration cannot
+    # widen access to anything.
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("projects.id", ondelete="SET NULL")
+    )
+
+    # Revision identity. A `drawings` row is the stable thing -- S-104 -- and
+    # each upload of it is one revision. All nullable: a specification or a
+    # calculation sheet is a document without being a revision of a drawing.
+    drawing_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("drawings.id", ondelete="SET NULL")
+    )
+    revision_label: Mapped[str | None] = mapped_column(String(16))
+    # Sort key. Labels are inconsistent across practices (A/B/C, 0/1/2,
+    # P1/C1), so ordering uses an integer derived at registration rather than
+    # comparing label text.
+    revision_index: Mapped[int | None] = mapped_column(Integer)
+    revision_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revision_note: Mapped[str | None] = mapped_column(Text)
+    # The current revision of its drawing. Search defaults to these: answering
+    # from a superseded sheet is worse than not answering.
+    is_latest: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    superseded_by_document_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     user: Mapped[UserModel] = relationship("UserModel", back_populates="documents")
     # passive_deletes=True: trust the FK's ondelete="CASCADE" in the DB rather
@@ -159,6 +275,16 @@ class DocumentChunkModel(Base):
     tags: Mapped[list[str] | None] = mapped_column(ARRAY(String))
     file_type: Mapped[str | None] = mapped_column(String(50))
     document_name: Mapped[str | None] = mapped_column(String(500))
+
+    # Project and revision identity, denormalized so retrieval filters inside
+    # Qdrant/Elasticsearch without a join back to `documents`. `is_latest` in
+    # particular sits on the hot path of every query.
+    project_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    project_number: Mapped[str | None] = mapped_column(String(64))
+    drawing_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    drawing_number: Mapped[str | None] = mapped_column(String(64))
+    revision_label: Mapped[str | None] = mapped_column(String(16))
+    is_latest: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
     document: Mapped[DocumentModel] = relationship("DocumentModel", back_populates="chunks")
 
