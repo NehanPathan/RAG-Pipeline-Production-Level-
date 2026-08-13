@@ -4,6 +4,12 @@ import { setCredentials } from "@/api/client"
 import { setMockPrincipal } from "@/api/mock/handlers"
 import { USERS } from "@/api/mock/corpus"
 import type { Principal, Role, Sensitivity } from "@/api/types"
+import {
+  type FirebaseSession,
+  isExpired,
+  refreshSession,
+  signInWithPassword,
+} from "@/lib/firebase"
 
 /**
  * Session state.
@@ -21,6 +27,8 @@ export interface Session {
   principal: Principal
   /** Present only in verified mode. */
   token?: string
+  /** Firebase tokens, so a reload can refresh rather than force a re-login. */
+  firebase?: FirebaseSession
 }
 
 interface AuthContextValue {
@@ -94,9 +102,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
         // Real deployment: exchange credentials with Firebase, then let the
         // API resolve the local user and role from the verified token.
-        throw new Error(
-          "Firebase sign-in is not wired up in this build. Set VITE_USE_MOCKS=true, or add the Firebase web SDK config.",
-        )
+        //
+        // The principal is never taken from Firebase. Firebase proves *who*
+        // the caller is; role and clearance are read from our own database
+        // by `resolve_principal`, so a token cannot assert privilege. That
+        // is why this second call exists rather than decoding the JWT here.
+        const firebase = await signInWithPassword(email, password)
+        setCredentials({ mode: "bearer", token: firebase.idToken, userId: firebase.localId })
+        const { principal } = await api.whoAmI()
+        persist({ principal, token: firebase.idToken, firebase })
       } finally {
         setLoading(false)
       }
@@ -126,6 +140,30 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   )
 
   const signOut = React.useCallback(() => persist(null), [persist])
+
+  // Firebase ID tokens last an hour. A restored session whose token has
+  // expired would otherwise keep sending it: the API rejects it with 401 and
+  // the UI shows "signed in" over a wall of failed requests. Refreshing on
+  // mount turns that into either a working session or a clean sign-out.
+  React.useEffect(() => {
+    if (USE_MOCKS || !session?.firebase || !isExpired(session.firebase)) return
+    let cancelled = false
+    void (async () => {
+      try {
+        const firebase = await refreshSession(session.firebase!.refreshToken)
+        if (cancelled) return
+        persist({ ...session, token: firebase.idToken, firebase })
+      } catch {
+        // The refresh token is revoked or expired: the session is genuinely
+        // over, and saying so is better than failing every request quietly.
+        if (!cancelled) persist(null)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+    // Runs on mount and whenever a new session is stored.
+  }, [session, persist])
 
   const value = React.useMemo<AuthContextValue>(
     () => ({

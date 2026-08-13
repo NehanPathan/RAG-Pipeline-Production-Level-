@@ -150,6 +150,9 @@ services:
         # convincing product full of drawings that do not exist.
         VITE_USE_MOCKS: "false"
         VITE_API_BASE: /api/v1
+        # Read from .env so the key lives in one place. Not a secret --
+        # see docker/frontend.Dockerfile.
+        VITE_FIREBASE_API_KEY: ${FIREBASE_WEB_API_KEY:-}
     ports:
       - "15173:8080"
     depends_on:

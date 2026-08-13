@@ -305,6 +305,13 @@ async def list_documents(
         sensitivity_in=Sensitivity.values_at_or_below(principal.clearance),
         search=search,
         project_ids=project_ids,
+        # Admins see the whole corpus here for the same reason they can open
+        # any single document: they already reclassify and delete across it.
+        # Without this the two views disagree in the other direction -- an
+        # empty list beside a detail endpoint that opens anything by id --
+        # which is the same inconsistency, just mirrored. Clearance still
+        # applies above: `all_documents` widens reach, never classification.
+        all_documents=principal.is_admin,
     )
     return DocumentListResponse(
         items=[_to_response(d) for d in documents],

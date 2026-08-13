@@ -28,6 +28,7 @@ class DocumentRepository(ABC):
         sensitivity_in: list[str] | None = None,
         search: str | None = None,
         project_ids: list[uuid.UUID] | None = None,
+        all_documents: bool = False,
     ) -> tuple[list[Document], int]:
         """Page through a user's documents.
 

@@ -24,8 +24,13 @@ COPY frontend/ ./
 # product while showing fabricated drawings.
 ARG VITE_USE_MOCKS=false
 ARG VITE_API_BASE=/api/v1
+# A Firebase web API key identifies the project and is meant to ship in
+# client bundles; it is not a credential. Security comes from server-side
+# token verification and the email-domain allow-list.
+ARG VITE_FIREBASE_API_KEY=
 ENV VITE_USE_MOCKS=$VITE_USE_MOCKS
 ENV VITE_API_BASE=$VITE_API_BASE
+ENV VITE_FIREBASE_API_KEY=$VITE_FIREBASE_API_KEY
 
 RUN npm run build
 

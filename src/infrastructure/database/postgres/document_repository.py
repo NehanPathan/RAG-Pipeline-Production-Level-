@@ -67,6 +67,7 @@ class PostgresDocumentRepository(DocumentRepository):
         sensitivity_in: list[str] | None = None,
         search: str | None = None,
         project_ids: list[uuid.UUID] | None = None,
+        all_documents: bool = False,
     ) -> tuple[list[Document], int]:
         """Documents this caller can reach: their own, plus their projects'.
 
@@ -81,10 +82,16 @@ class PostgresDocumentRepository(DocumentRepository):
         that already holds the membership list does not fetch it twice.
         """
         async with self._session_factory() as session:
-            reach = DocumentModel.user_id == user_id
-            if project_ids:
-                reach = or_(reach, DocumentModel.project_id.in_(project_ids))
-            stmt = select(DocumentModel).where(reach)
+            if all_documents:
+                # Reach is unrestricted; clearance is applied below and is
+                # never skipped, so this widens *who* is in scope and not
+                # *what* classification may be read.
+                stmt = select(DocumentModel)
+            else:
+                reach = DocumentModel.user_id == user_id
+                if project_ids:
+                    reach = or_(reach, DocumentModel.project_id.in_(project_ids))
+                stmt = select(DocumentModel).where(reach)
             if status is not None:
                 stmt = stmt.where(DocumentModel.status == status.value)
             if file_type is not None:
