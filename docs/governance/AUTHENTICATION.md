@@ -177,8 +177,11 @@ rather than being mistaken for it.
 - **No token revocation check per request.** `check_revoked=False` avoids a
   Firebase round-trip on every call; with a ~1h token lifetime the exposure
   window after a revocation is bounded by that lifetime.
-- **No rate limiting per identity.** The settings exist (`RATE_LIMIT_*`) but
-  nothing reads them.
+- **Unauthenticated endpoints are not rate limited.** Per-identity limiting
+  *is* implemented (`src/governance/rate_limit.py`, applied at
+  `documents.py` and `chat.py`, keyed on the principal rather than the IP),
+  but a caller with no principal falls outside it. A reverse proxy should
+  impose a per-IP limit in front of the API.
 - **Conversations are not clearance-filtered.** A message may quote
   `confidential` passages while the message row carries no classification of
   its own.

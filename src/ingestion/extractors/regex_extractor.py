@@ -26,6 +26,7 @@ Confidence levels, applied consistently:
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable, Iterator
 
 from src.ingestion.extractors.gazetteer import Gazetteer, get_gazetteer
 from src.ingestion.extractors.models import (
@@ -43,6 +44,11 @@ from src.ingestion.extractors.normalizer import (
     canonical_unit,
     to_si,
 )
+
+# What each extraction pass yields, before merging: the entity's type and
+# canonical form, how confident the pass is, its attributes, and the one
+# place it was seen.
+Found = tuple[SteelEntityType, str, float, dict[str, str], EntityOccurrence]
 
 CONFIDENCE_GAZETTEER = 0.95
 CONFIDENCE_PATTERN = 0.85
@@ -176,7 +182,7 @@ class RegexSteelEntityExtractor:
         Chunk-level extraction runs this over every chunk during ingestion,
         where an await per chunk would buy nothing -- there is no I/O here.
         """
-        found: list[tuple[SteelEntityType, str, float, dict[str, str], EntityOccurrence]] = []
+        found: list[Found] = []
 
         found.extend(self._sections(text, page_number))
         found.extend(self._grades(text, page_number))
@@ -190,11 +196,13 @@ class RegexSteelEntityExtractor:
 
     # -- individual passes -------------------------------------------------
 
-    def _sections(self, text: str, page: int | None):
+    def _sections(self, text: str, page: int | None) -> Iterator[Found]:
         for pattern in (self._section_multi, self._section_single):
             yield from self._sections_for(pattern, text, page)
 
-    def _sections_for(self, pattern: re.Pattern[str], text: str, page: int | None):
+    def _sections_for(
+        self, pattern: re.Pattern[str], text: str, page: int | None
+    ) -> Iterator[Found]:
         for match in pattern.finditer(text):
             prefix, size = match.group(1), match.group(2)
             # The dotted spelling is matched as written; the gazetteer is
@@ -230,7 +238,7 @@ class RegexSteelEntityExtractor:
                 _occurrence(match, page, EntitySource.GAZETTEER),
             )
 
-    def _grades(self, text: str, page: int | None):
+    def _grades(self, text: str, page: int | None) -> Iterator[Found]:
         for pattern in _GRADE_PATTERNS:
             for match in pattern.finditer(text):
                 canonical = canonical_grade(match.group(0))
@@ -258,7 +266,7 @@ class RegexSteelEntityExtractor:
                 _occurrence(match, page, EntitySource.REGEX),
             )
 
-    def _bolts(self, text: str, page: int | None):
+    def _bolts(self, text: str, page: int | None) -> Iterator[Found]:
         for match in _BOLT.finditer(text):
             diameter, length, grade = match.group(1), match.group(2), match.group(3)
             # A bare "M20" with no grade and no length is as likely to be a
@@ -290,7 +298,7 @@ class RegexSteelEntityExtractor:
                 _occurrence(match, page, EntitySource.REGEX),
             )
 
-    def _welds(self, text: str, page: int | None):
+    def _welds(self, text: str, page: int | None) -> Iterator[Found]:
         for match in _WELD_SIZE.finditer(text):
             size, kind = match.group(1), match.group(2).upper()
             yield (
@@ -320,7 +328,7 @@ class RegexSteelEntityExtractor:
                 _occurrence(match, page, EntitySource.REGEX),
             )
 
-    def _dimensions(self, text: str, page: int | None):
+    def _dimensions(self, text: str, page: int | None) -> Iterator[Found]:
         for match in _DIMENSION.finditer(text):
             value = float(match.group(1))
             unit = canonical_unit(match.group(2))
@@ -340,7 +348,7 @@ class RegexSteelEntityExtractor:
                 _occurrence(match, page, EntitySource.REGEX),
             )
 
-    def _identifiers(self, text: str, page: int | None):
+    def _identifiers(self, text: str, page: int | None) -> Iterator[Found]:
         for entity_type, pattern in _IDENTIFIER_PATTERNS.items():
             for match in pattern.finditer(text):
                 yield (
@@ -351,7 +359,7 @@ class RegexSteelEntityExtractor:
                     _occurrence(match, page, EntitySource.REGEX),
                 )
 
-    def _standards(self, text: str, page: int | None):
+    def _standards(self, text: str, page: int | None) -> Iterator[Found]:
         for match in _STANDARD_REF.finditer(text):
             body = match.group(1).upper()
             number = re.sub(r"\s+", "-", match.group(2).strip())
@@ -374,7 +382,7 @@ def _occurrence(match: re.Match[str], page: int | None, source: EntitySource) ->
     )
 
 
-def _merge(found) -> EntityExtractionResult:
+def _merge(found: Iterable[Found]) -> EntityExtractionResult:
     """Collapse repeated matches into one entity per (type, canonical).
 
     Occurrences are unioned rather than replaced, so a designation appearing

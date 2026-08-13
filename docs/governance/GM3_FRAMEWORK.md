@@ -236,7 +236,10 @@ the leak rather than closing it.
 - **Token revocation is not checked per request.** `check_revoked=False`
   avoids a Firebase round-trip on every call; with a ~1h token lifetime the
   exposure window after a revocation is bounded by that lifetime.
-- **Rate limiting.** `RATE_LIMIT_*` settings exist and nothing reads them.
+- **Rate limiting for anonymous callers.** Per-identity limiting is
+  implemented and enforced (`src/governance/rate_limit.py`, controls
+  C-MAN-12/13/14 under R-O06); a request with no principal is outside it and
+  needs a per-IP limit at the reverse proxy.
 - **Conversations are not clearance-filtered.** A message may quote
   `confidential` passages while the message row carries no classification of
   its own.
