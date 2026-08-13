@@ -92,6 +92,25 @@ class StructureChunker:
                 )
                 continue
 
+            # A page boundary ends a section, even mid-heading. A section is
+            # labelled with one page number, so one that spans five pages
+            # claims to be on the first of them -- and every chunk cut from
+            # it inherits that claim, which is what a citation quotes.
+            #
+            # Found by a five-page fixture whose only heading was on page 5:
+            # pages 1 to 4 merged into a single section reported as page 1,
+            # so pages 3 and 4 produced no separately-citable chunk at all.
+            # A paragraph running across a break is split, which is the
+            # right trade: a chunk can only cite one page, so this makes the
+            # page it cites true. The heading carries over, so a section
+            # continuing onto the next page keeps its title.
+            if (
+                buffer_page is not None
+                and block.page_number is not None
+                and block.page_number != buffer_page
+            ):
+                flush_section()
+
             if block.ocr_confidence is not None:
                 buffer_confidences.append(block.ocr_confidence)
 

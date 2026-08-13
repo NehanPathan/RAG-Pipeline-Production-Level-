@@ -10,7 +10,11 @@ from src.ingestion.chunkers.structure_chunker import StructureChunker
 from src.ingestion.layout.models import DocumentLayout
 from src.ingestion.loaders.base import RawDocument, TableBlock, TextBlock
 from src.ingestion.ocr.models import OCRMetadata
-from src.ingestion.parsing.drawing_detector import ContentClassification, ContentKind
+from src.ingestion.parsing.drawing_detector import (
+    ContentClassification,
+    ContentKind,
+    PageClassification,
+)
 from src.ingestion.parsing.parsed_document import ParsedDocument
 
 
@@ -255,3 +259,141 @@ async def test_every_chunk_records_how_its_text_was_obtained():
 
     assert chunks
     assert all(c.chunk_metadata.content_kind == "cad_native" for c in chunks)
+
+
+# --- Per-page and per-block labelling --------------------------------------
+
+
+def _multi_page_parsed(page_kinds: dict[int, ContentKind], blocks) -> ParsedDocument:
+    raw = RawDocument(
+        file_path=Path("/tmp/mixed.pdf"),
+        file_name="mixed.pdf",
+        mime_type="application/pdf",
+        text_blocks=blocks,
+        tables=[],
+        page_count=max(page_kinds),
+        loader_name="docling",
+    )
+    pages = {
+        number: PageClassification(page_number=number, kind=kind, confidence=1.0, reason="test")
+        for number, kind in page_kinds.items()
+    }
+    return ParsedDocument(
+        raw=raw,
+        ocr_metadata=OCRMetadata(engine="tesseract", ran=True, confidence=0.25),
+        layout=DocumentLayout(),
+        classification=ContentClassification(
+            kind=ContentKind.MIXED, reason="pages differ", pages=pages
+        ),
+    )
+
+
+async def test_each_chunk_is_labelled_from_its_own_page():
+    """A five-page PDF is routinely five different things.
+
+    Stamping every chunk with one document-level kind would mislabel the
+    specification pages as drawings, or the drawing pages as prose --
+    whichever way the average happened to fall.
+    """
+    blocks = []
+    for page in (1, 2, 3):
+        # A heading per page, so each page becomes its own section rather
+        # than all three merging into one that reports page 1. The body text
+        # differs per page too -- identical text is correctly rejected as
+        # duplicate, which would leave only page 1 and hide the bug.
+        blocks.append(
+            TextBlock(text=f"Section {page}", element_label="section_header", page_number=page)
+        )
+        body = " ".join(f"p{page}word{i}" for i in range(60))
+        blocks.append(TextBlock(text=body, element_label="text", page_number=page))
+
+    doc = _multi_page_parsed(
+        {
+            1: ContentKind.PROSE,
+            2: ContentKind.VECTOR_DRAWING,
+            3: ContentKind.SCANNED_DRAWING,
+        },
+        blocks,
+    )
+
+    chunks = await _pipeline().chunk(uuid.uuid4(), doc)
+
+    by_page = {c.chunk_metadata.page_number: c.chunk_metadata.content_kind for c in chunks}
+    assert by_page[1] == "prose"
+    assert by_page[2] == "vector_drawing"
+    assert by_page[3] == "scanned_drawing"
+
+
+async def test_a_mixed_page_labels_each_chunk_by_its_own_text():
+    """A sheet with a detail drawing above and erection notes below.
+
+    The notes must not be filed as drawing content merely for sharing a page
+    with a drawing -- and the title block must not be filed as prose.
+    """
+    prose = (
+        "This specification covers the supply and erection of structural steelwork. "
+        "All steel shall conform to IS 2062 E250 unless noted otherwise. "
+        "Bolted connections shall use property class 8.8 bolts to IS 1367. "
+    )
+    doc = _multi_page_parsed(
+        {1: ContentKind.MIXED},
+        [
+            TextBlock(text="DRAWING NO: S-207 REV: A SCALE 1:50", page_number=1),
+            TextBlock(text=prose * 2, element_label="text", page_number=1),
+        ],
+    )
+
+    chunks = await _pipeline().chunk(uuid.uuid4(), doc)
+
+    kinds = {c.chunk_metadata.content_kind for c in chunks}
+    assert "vector_drawing" in kinds, "the title block is drawing content"
+    assert "prose" in kinds, "the notes are not"
+    assert "mixed" not in kinds, "MIXED describes a page, never a chunk"
+
+
+async def test_the_drawing_floor_is_applied_per_chunk_not_per_document():
+    """At 0.25 mean confidence, a drawing chunk must survive and a prose
+    chunk must not -- in the *same* document.
+
+    A document-wide flag would either hold the drawing pages to the prose
+    floor (losing them, which is the original bug) or wave the prose pages
+    through on the drawing floor.
+    """
+    pipeline = HybridChunkingPipeline(
+        structure_chunker=StructureChunker(),
+        semantic_chunker=SemanticChunker(
+            embedding_provider=StubEmbeddingProvider(), min_sentences_for_split=999
+        ),
+        parent_child_chunker=ParentChildChunker(
+            ChunkingConfig(parent_chunk_size=64, child_chunk_size=16, overlap=4)
+        ),
+        validator=ChunkValidator(min_ocr_confidence=0.35, min_ocr_confidence_drawing=0.15),
+    )
+    body = "B-14 ISMB 300 Fe 415 SPAN 6000 SHEAR 180 kN plate detail"
+    doc = _multi_page_parsed(
+        {1: ContentKind.SCANNED_PROSE, 2: ContentKind.SCANNED_DRAWING},
+        [
+            TextBlock(text="Erection notes", element_label="section_header", page_number=1),
+            TextBlock(text=body, element_label="text", page_number=1),
+            TextBlock(text="Base plate detail", element_label="section_header", page_number=2),
+            TextBlock(text=body, element_label="text", page_number=2),
+        ],
+    )
+
+    chunks = await pipeline.chunk(uuid.uuid4(), doc)
+
+    pages = {c.chunk_metadata.page_number for c in chunks}
+    assert pages == {2}, "the drawing page survives the low confidence, the prose page does not"
+
+
+def test_the_drawing_floor_covers_every_drawing_content_kind():
+    """Keeps the validator's string set in step with the enum.
+
+    The validator compares `content_kind` as a string to avoid depending on
+    the parsing package, so nothing but this test stops the two drifting.
+    """
+    from src.ingestion.chunkers.chunk_validator import _DRAWING_CONTENT_KINDS
+
+    expected = {kind.value for kind in ContentKind if kind.is_drawing}
+
+    assert expected == _DRAWING_CONTENT_KINDS

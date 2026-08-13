@@ -111,9 +111,13 @@ class DocumentParsingService:
         # Classify before deciding on OCR, not after: whether the file has a
         # text layer of its own is one of the inputs to that decision, and it
         # stops being observable the moment OCR text is merged in.
-        classification = self._content_detector.classify(raw_document, file_path, file_type)
+        classification = await self._content_detector.classify_with_fallback(
+            raw_document, file_path, file_type
+        )
         decision = self._ocr_detector.detect(
-            raw_document, file_type, has_native_text_layer=classification.has_native_text_layer
+            raw_document,
+            file_type,
+            pages_without_text_layer=classification.pages_without_text_layer,
         )
 
         if decision.required:

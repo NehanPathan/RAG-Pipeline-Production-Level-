@@ -134,28 +134,40 @@ No parallel pipeline. `DxfLoader` maps CAD constructs onto the intermediate repr
 
 ### Drawings that arrive as PDFs
 
-Most steel drawings are not DXF. They are plotted to PDF, or scanned from a plan chest, and the pipeline has to recognise all three cases without a second RAG stack. `DrawingContentDetector` (`src/ingestion/parsing/drawing_detector.py`) classifies a loaded document and hangs the result on `ParsedDocument.classification` — deliberately **not** on `RawDocument`, which is the loaders' output contract and cannot answer this: the question is only decidable once the file and the extracted text can be compared.
+Most steel drawings are not DXF. They are plotted to PDF, or scanned from a plan chest, and the pipeline has to recognise every case without a second RAG stack. `DrawingContentDetector` (`src/ingestion/parsing/drawing_detector.py`) classifies **each page** of a loaded document and hangs the result on `ParsedDocument.classification` — deliberately **not** on `RawDocument`, which is the loaders' output contract and cannot answer this: the question is only decidable once the file and the extracted text can be compared.
 
-Measured on the reference fixtures:
+**Per page, not per document.** One client PDF is routinely a specification page, a beam schedule, a plotted sheet, a scan of an old sheet, and a detail page with a drawing above and erection notes below. Classified as a whole, the reference five-page fixture came back `vector_drawing` at 111 words/page and 1.34 periods per 100 characters — mid-range on both signals, wrong for four of the five pages, and, worst, it summed the native text layer to 458 words and so could not see that page 4 had none. **The scan was invisible and never reached OCR.** Per page it separates cleanly:
 
-| | native text layer | words/page | periods per 100 chars |
-|---|---|---|---|
-| Vector CAD PDF | 60 words | 60 | 0.34 |
-| Scanned drawing PDF | **0 words** | 60 | 0.35 |
-| Prose specification | 219 words | 219 | 1.83 |
+| page | native text | loader words | kind | confidence |
+|---|---|---|---|---|
+| 1 specification | 210 | 210 | `prose` | 1.00 |
+| 2 beam schedule | 58 | 58 (a table) | `prose` | 0.17 |
+| 3 plotted sheet | 29 | 29 | `vector_drawing` | 1.00 |
+| 4 scan of it | **0** | 30 | `scanned_drawing` | 1.00 |
+| 5 drawing + notes | 164 | 164 | `mixed` | 1.00 |
 
-Two orthogonal signals, each answering a different question:
+OCR is then routed to pages 2 and 4 only — the four good pages are not re-OCR'd because the fifth was a scan.
 
-- **Is there a native text layer?** (pypdf, reading the file directly.) This is the *only* reliable scan-vs-plot discriminator, because **Docling silently OCRs scanned pages with its internal RapidOCR** and returns the result as ordinary extracted text — same word count, same block count, same labels. By the time the pipeline sees a `RawDocument` the two are indistinguishable.
-- **Does the text read like sentences?** Prose terminates sentences; a drawing is labels, dimensions and schedule rows. Title-block markers (`DRAWING NO`, `SCALE 1:100`, `REV`) override both statistics when present, since prose does not say those things in passing. The two statistical signals must *agree* — a short cover note trips words-per-page alone, a table of contents trips sentence-density alone, and neither is a drawing.
+**Deterministic and offline.** Regex, arithmetic, and one pypdf read of the file. No LLM or network call is made, per page or otherwise; a per-page model call would cost more than the ingestion it serves and would make classification irreproducible between runs. Each page carries a **confidence**, and only a page whose signals genuinely conflict is referred to an optional `VisionPageClassifier` — of which none ships by default. A vision verdict may judge drawing-vs-prose but may never overrule the text-layer probe, because whether a page has a text layer is a fact read from the file rather than an opinion.
 
-`0` and `None` are different answers from the probe: "I read the file and there is no text" versus "I could not read the file". Only the first is evidence of a scan. Inferring the first from a missing or corrupt file would turn an operational error into a forced full-page OCR pass on every document.
+The signals, each answering a different question:
+
+- **Is there a native text layer, on this page?** (pypdf, reading the file directly.) This is the *only* reliable scan-vs-plot discriminator, because **Docling silently OCRs scanned pages with its internal RapidOCR** and returns the result as ordinary extracted text — same word count, same block count, same labels. By the time the pipeline sees a `RawDocument` the two are indistinguishable. Page 4 of the fixture even carries Docling's own OCR errors (`BQLTS: M20?60`) as if they were extracted text.
+- **Does the text read like sentences?** Prose terminates sentences; a drawing is labels, dimensions and schedule rows. Weighted votes rather than hard thresholds, so the margin between them is a usable confidence.
+- **Title-block markers** (`DRAWING NO`, `SCALE 1:100`, `REV`) and **dimension callouts** (`400x400x20`, `M24`, `Ø20`, `1:50`) — prose does not say these in passing.
+- **A parsed table grid** is close to conclusive for prose, and weighted as heavily as a title block. A schedule has no terminated sentences and few words, so it trips both statistical *drawing* signals at once: the fixture's table page scored an exact 2.5–2.5 tie before this weight was added — the right verdict at zero confidence, which is no verdict at all.
+- **Images and their coverage**, which separate a scanned page from a blank one. Both have no text; only one has a raster on it.
+
+`0` and `None` are different answers from the probe: "I read the page and there is no text" versus "I could not read the file". Only the first is evidence of a scan. Inferring the first from a missing or corrupt file would turn an operational error into a forced full-page OCR pass on every document.
+
+**Mixed pages are supported rather than forced into one type.** Blocks are classified individually, and a page counts as `MIXED` when drawing content and prose are *both* substantially present — not when they are balanced. Weighting the halves by word count systematically under-counts the drawing side, because a drawing's text is inherently sparse: the fixture's genuinely-mixed page scores 0.15 on that ratio and would be filed as a pure drawing. A mixed page's confidence scores certainty that *both* are present, since its drawing-vs-prose margin is near zero by definition and reporting that would send every correctly-identified mixed page to the ambiguity fallback.
 
 **What the classification routes:**
 
-- A **scanned** PDF is sent to our own OCR even though it looks text-rich, because the text it appears to have carries no confidence score and no word coordinates — the two things `ChunkValidator` and region highlighting are built on. `OCRDetector.detect(..., has_native_text_layer=False)`; switchable off via `ocr_pdfs_without_text_layer` where the extra pass is not worth its cost.
-- A **drawing** is validated against the drawing OCR confidence floor (0.15) rather than the prose floor (0.35). This previously keyed off the *loader name*, so only an uploaded image ever qualified and a drawing exported to PDF — which is how drawings actually arrive — was held to the prose floor. That is the same failure as the bug the floor was written to fix: the drawings most in need of it were the ones that never got it.
-- A **scanned prose** report keeps the standard floor. It is laid out as prose and should OCR cleanly, so a low score there is a real problem, not the nature of the input.
+- **Chunks are labelled from their own page**, and on a `MIXED` page from their own text — so the title block is drawing content and the erection notes beside it are not. `MIXED` describes a page; it is never a chunk's `content_kind`.
+- **Scanned pages** are sent to our own OCR even though they look text-rich, because the text they appear to have carries no confidence score and no word coordinates — the two things `ChunkValidator` and region highlighting are built on. `OCRDetector.detect(..., pages_without_text_layer=[…])` unions those pages with the sparse ones, so exactly the pages that need OCR get it. Switchable off via `ocr_pdfs_without_text_layer` where the extra pass is not worth its cost.
+- **Drawing chunks** are validated against the drawing OCR confidence floor (0.15) rather than the prose floor (0.35), decided **per chunk** from its own `content_kind`. A document-wide flag would either hold the drawing pages to the prose floor or wave the prose pages through on the drawing floor, and a single PDF routinely contains both. This previously keyed off the *loader name*, so only an uploaded image ever qualified and a drawing exported to PDF — which is how drawings actually arrive — was held to the prose floor. That is the same failure as the bug the floor was written to fix: the drawings most in need of it were the ones that never got it.
+- **Scanned prose** keeps the standard floor. It is laid out as prose and should OCR cleanly, so a low score there is a real problem, not the nature of the input.
 
 OCR failure is non-fatal when the loader already extracted usable text. Routing scanned PDFs to OCR made that path reachable for documents that previously ingested fine, and a host without poppler or tesseract must not turn this fix into a regression: the confidence scores and geometry are lost, the document is not. With no text to fall back on it still raises, because silently indexing an empty document is worse than reporting the failure.
 
@@ -202,6 +214,9 @@ Recorded because each one silently produced wrong behaviour and left no error:
 - **Qdrant payload indexes must be added in two places** — collection creation *and* `ensure_payload_indexes` — or existing deployments full-scan the new field forever.
 - **The denormalized chunk fields had no system of record.** `user_id`, `domain`, `tags`, `file_type`, `document_name` lived only in Qdrant and Elasticsearch, so any path that reloaded chunks from Postgres and re-indexed destroyed them. Fixed by giving them Postgres columns and by using partial-update ports instead of whole-document rewrites.
 - **Two hand-built payload dicts drift.** Qdrant and Elasticsearch now share one `chunk_to_payload` / `payload_to_chunk` pair, so every new field lands in both stores by construction.
+- **Classifying a document rather than its pages.** One PDF is routinely a specification, a schedule, a plotted sheet and a scan. Every document-wide average over those is mid-range and therefore meaningless, and a summed text-layer count hides the single scanned page completely.
+- **A section that spans pages claims to be on the first of them.** `StructureChunker` accumulated across page boundaries, so a five-page fixture whose only heading sat on page 5 produced one section reported as page 1 — pages 3 and 4 yielded no separately-citable chunk at all, and every citation from that section named the wrong sheet. Sections now end at a page boundary: a chunk can only cite one page, so this makes the page it cites true.
+- **`match` on `*` is not "match everything".** The structured-search endpoint sends `*` when the user types no query, and Elasticsearch looked for the literal token — so filter-only browsing, the drawing register's primary use, silently returned nothing. An empty or `*` query now issues `match_all`.
 - **Deciding what a document *is* from its loader name.** `_is_drawing` keyed off `loader_name == "image_passthrough"`, so a drawing exported to PDF loaded through Docling like any report and never received the drawing OCR floor. Content classification is a property of the content, not of which loader happened to read it.
 - **A downstream library's silent OCR erases the evidence you need.** Docling OCRs scanned pages internally and returns the text as if it had been extracted, so word-density checks see a healthy page and skip our OCR — losing the confidence and coordinates that the text never had. The file itself has to be probed before any of that is merged in.
 - **A document-level average used as a per-chunk threshold rejects everything.** `ChunkValidator` compared each chunk against the *document's* mean OCR confidence; scanned drawings average 0.30–0.50 and lost every chunk while still reporting `status=indexed`. Confidence is now per-chunk, with a separate floor for drawings.

@@ -36,4 +36,14 @@ class ParsedDocument:
 
     @property
     def content_kind(self) -> ContentKind:
+        """The document-level summary -- MIXED whenever its pages disagree.
+
+        Routing for anything that belongs to a specific page should use
+        `kind_for_page` instead: a five-page PDF holding a specification, a
+        schedule, a plotted sheet and a scan has no single honest answer, and
+        collapsing it to one is what this replaced.
+        """
         return self.classification.kind
+
+    def kind_for_page(self, page_number: int | None) -> ContentKind:
+        return self.classification.kind_for_page(page_number)

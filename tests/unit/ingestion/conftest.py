@@ -1,14 +1,4 @@
-"""Real PDFs for the three engineering-drawing cases.
-
-Built here rather than committed as binaries so the fixture states what
-makes each file the case it claims to be: the vector sheet really does carry
-its text as text, and the scanned one really has no text layer, because it
-was rasterised before being written.
-
-Shared between the detector's own tests and the parsing-orchestrator tests,
-which need genuine files -- the whole point of the detection is that it
-reads the file rather than the loader's output.
-"""
+"""Fixtures over the shared PDF builders in `tests/pdf_fixtures.py`."""
 
 from __future__ import annotations
 
@@ -16,93 +6,97 @@ from pathlib import Path
 
 import pytest
 
-# A drawing's text: labels, a schedule and a title block. No sentences.
-DRAWING_LINES = [
-    "DRAWING NO: S-104",
-    "REV: C",
-    "SCALE 1:100",
-    "ROOF FRAMING PLAN",
-    "BEAM SCHEDULE",
-    "B-14  ISMB 300  Fe 415  SPAN 6000",
-    "B-15  ISMB 400  Fe 415  SPAN 7500",
-    "C-01  ISMC 200  Fe 410  BRACING",
-    "ALL DIMENSIONS IN MM",
-    "BOLTS: M20x60 GRADE 8.8",
-]
-
-# A specification's text: prose, with terminated sentences.
-PROSE_TEXT = (
-    "This specification covers the supply and erection of structural steelwork. "
-    "All steel shall conform to IS 2062 E250 unless noted otherwise on the drawings. "
-    "Bolted connections shall use property class 8.8 bolts to IS 1367. "
-    "Welding shall be carried out by qualified welders in accordance with IS 816. "
-    "The contractor shall submit fabrication drawings for approval before work begins. "
-    "Surface preparation shall achieve SA 2.5 before the application of primer. "
+from tests.pdf_fixtures import (
+    DRAWING_LINES,
+    ERECTION_NOTES,
+    MIXED_PAGE_KINDS,
+    PROSE_TEXT,
+    TABLE_ROWS,
+    build_drawing_pdfs,
 )
 
-
-def _plot_drawing(ax) -> None:
-    ax.set_xlim(0, 1)
-    ax.set_ylim(0, 1)
-    ax.axis("off")
-    for y in (0.35, 0.55, 0.75):
-        ax.plot([0.10, 0.60], [y, y], "k-", lw=1.6)
-    for line_index, text in enumerate(DRAWING_LINES):
-        ax.text(0.08, 0.94 - line_index * 0.03, text, fontsize=7)
+__all__ = [
+    "DRAWING_LINES",
+    "ERECTION_NOTES",
+    "MIXED_PAGE_KINDS",
+    "PROSE_TEXT",
+    "TABLE_ROWS",
+]
 
 
 @pytest.fixture(scope="session")
 def drawing_pdfs(tmp_path_factory) -> dict[str, Path]:
-    """One PDF per case, each genuinely of the kind it is named for."""
-    matplotlib = pytest.importorskip("matplotlib", reason="fixtures need matplotlib")
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    from matplotlib.backends.backend_pdf import PdfPages
+    pytest.importorskip("matplotlib", reason="fixtures need matplotlib")
+    return build_drawing_pdfs(tmp_path_factory.mktemp("drawing_pdfs"))
 
-    out = tmp_path_factory.mktemp("drawing_pdfs")
 
-    # 1. Plotted from CAD: text is real text.
-    with PdfPages(out / "vector.pdf") as pdf:
-        fig, ax = plt.subplots(figsize=(11.7, 8.3))
-        _plot_drawing(ax)
-        pdf.savefig(fig)
-        plt.close(fig)
+# What Docling actually returns for `mixed_document.pdf`, captured from a
+# real run. Reproduced here rather than invoking Docling in the unit suite,
+# which is how every other loader test in this package works -- but the PDF
+# itself is real, because the native-text-layer probe reads the file
+# directly and stubbing that would defeat the entire test.
+#
+# Page 4's `BQLTS: M20?60` is not a typo. Docling OCR'd that page with its
+# internal RapidOCR and made those errors, which is exactly why the pipeline
+# cannot tell a scan from a plotted sheet by looking at extracted text.
+MIXED_DOCLING_BLOCKS: list[tuple[int, str, str]] = [
+    (1, "text", PROSE_TEXT * 3),
+    (2, "page_header", "BEAM AND COLUMN SCHEDULE"),
+    (3, "text", "6000"),
+    (3, "text", "DRAWING NO: S-104"),
+    (3, "text", "REV: C"),
+    (3, "text", "SCALE 1:100"),
+    (3, "text", "ROOF FRAMING PLAN"),
+    (3, "text", "B-14  ISMB 300  SPAN 6000"),
+    (3, "text", "B-15  ISMB 400  SPAN 7500"),
+    (3, "text", "ALL DIMENSIONS IN MM"),
+    (3, "text", "BOLTS: M20x60 GRADE 8.8"),
+    (4, "text", "DRAWING NO: S-104"),
+    (4, "text", "REV: C"),
+    (4, "text", "SCALE 1:100"),
+    (4, "text", "ROOF FRAMING PLAN"),
+    (4, "text", "B-14 ISMB 300 SPAN 6000"),
+    (4, "text", "B-15 ISMB 400 SPAN 7500"),
+    (4, "text", "ALL DIMENSIONS IN MM"),
+    (4, "text", "BQLTS: M20�60 GRADE 8.8"),
+    (4, "text", "6000"),
+    (4, "text", "4"),
+    (5, "text", "DRAWING NO: S-207 REV: A   SCALE 1:50 BASE PLATE DETAIL"),
+    (5, "text", "PLATE 400x400x20  Fe 410 4 NOS M24 ANCHOR BOLTS"),
+    (5, "section_header", "NOTES ON BASE PLATE ERECTION"),
+    (5, "text", ERECTION_NOTES * 2),
+]
 
-    # 2. Scanned: the same sheet rasterised, so the text layer is gone. This
-    #    is what a plan-chest scan or a photocopy actually is.
-    fig, ax = plt.subplots(figsize=(11.7, 8.3))
-    _plot_drawing(ax)
-    fig.savefig(out / "_raster.png", dpi=110)
-    plt.close(fig)
+MIXED_TABLE_MARKDOWN = "\n".join(
+    ["| Mark | Section | Grade | Length | Qty | Mass |", "| --- | --- | --- | --- | --- | --- |"]
+    + ["| " + " | ".join(row.split()) + " |" for row in TABLE_ROWS[1:]]
+)
 
-    fig, ax = plt.subplots(figsize=(11.7, 8.3))
-    ax.imshow(plt.imread(out / "_raster.png"))
-    ax.axis("off")
-    fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
-    fig.savefig(out / "scanned.pdf", format="pdf", dpi=110)
-    plt.close(fig)
 
-    # 3. A specification. The control: if this stops being prose, the
-    #    routing is a blanket behaviour change rather than a fix.
-    with PdfPages(out / "prose.pdf") as pdf:
-        fig, ax = plt.subplots(figsize=(8.3, 11.7))
-        ax.axis("off")
-        wrapped, line = [], ""
-        for word in (PROSE_TEXT * 3).split():
-            if len(line) + len(word) > 70:
-                wrapped.append(line)
-                line = word
-            else:
-                line = f"{line} {word}".strip()
-        wrapped.append(line)
-        for i, text in enumerate(wrapped[:44]):
-            ax.text(0.05, 0.96 - i * 0.021, text, fontsize=8)
-        pdf.savefig(fig)
-        plt.close(fig)
+@pytest.fixture(scope="session")
+def mixed_raw_document():
+    """The loader's view of `mixed_document.pdf`, as Docling really returns it."""
+    from src.ingestion.loaders.base import RawDocument, TableBlock, TextBlock
 
-    (out / "_raster.png").unlink(missing_ok=True)
-    return {
-        "vector": out / "vector.pdf",
-        "scanned": out / "scanned.pdf",
-        "prose": out / "prose.pdf",
-    }
+    blocks = [
+        TextBlock(text=text, page_number=page, element_label=label)
+        for page, label, text in MIXED_DOCLING_BLOCKS
+    ]
+    return RawDocument(
+        file_path="mixed_document.pdf",
+        file_name="mixed_document.pdf",
+        mime_type="application/pdf",
+        text_blocks=blocks,
+        tables=[TableBlock(markdown=MIXED_TABLE_MARKDOWN, page_number=2, row_count=7, col_count=6)],
+        loader_name="docling",
+        page_count=5,
+        word_count=sum(len(b.text.split()) for b in blocks),
+    )
+
+
+@pytest.fixture(scope="session")
+def mixed_classification(drawing_pdfs, mixed_raw_document):
+    """The five-page document classified: real file, real loader output."""
+    from src.ingestion.parsing.drawing_detector import DrawingContentDetector
+
+    return DrawingContentDetector().classify(mixed_raw_document, drawing_pdfs["mixed"], "pdf")

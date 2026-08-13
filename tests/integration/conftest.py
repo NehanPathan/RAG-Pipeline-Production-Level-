@@ -200,3 +200,43 @@ async def es_repo(elasticsearch_url: str):
     await repo.create_index_if_not_exists()
     yield repo
     await client.close()
+
+
+@pytest.fixture(scope="session")
+def mixed_document_pdf(tmp_path_factory):
+    """The five-page PDF that is five different kinds of content.
+
+    A real file, because the classifier reads the PDF's own text layer per
+    page -- the one signal that cannot be stubbed, since Docling's output
+    for a scanned page is indistinguishable from a plotted one.
+    """
+    pytest.importorskip("matplotlib", reason="the PDF fixtures need matplotlib")
+    from tests.pdf_fixtures import build_drawing_pdfs
+
+    return build_drawing_pdfs(tmp_path_factory.mktemp("mixed_pdf"))["mixed"]
+
+
+@pytest.fixture
+async def search_repository(elasticsearch_url: str):
+    """A real Elasticsearch index with the application's own mapping.
+
+    Per test with a unique index name: `create_index_if_not_exists`
+    short-circuits on an existing index, so a shared one would silently
+    serve a stale mapping to whichever test ran second.
+    """
+    from elasticsearch import AsyncElasticsearch
+
+    from src.infrastructure.search.elasticsearch.repository import (
+        ElasticsearchSearchRepository,
+    )
+
+    client = AsyncElasticsearch(hosts=[elasticsearch_url])
+    index = f"chunks_{uuid.uuid4().hex[:12]}"
+    repository = ElasticsearchSearchRepository(client, index)
+    await repository.create_index_if_not_exists()
+    await repository.ensure_mapping()
+    try:
+        yield repository
+    finally:
+        await client.indices.delete(index=index, ignore_unavailable=True)
+        await client.close()

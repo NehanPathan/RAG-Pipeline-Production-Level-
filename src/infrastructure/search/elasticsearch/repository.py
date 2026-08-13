@@ -155,7 +155,15 @@ class ElasticsearchSearchRepository(SearchRepository):
         top_k: int = 20,
         filters: BM25SearchFilter | None = None,
     ) -> list[BM25ScoredChunk]:
-        must_clauses: list[dict] = [{"match": {"content": {"query": query}}}]
+        # A filter-only search is legitimate and common: "every drawing in
+        # this project referencing ISMB 300" is a filter, not a question.
+        # `match` on "*" looks for the literal token, which occurs in no
+        # document, so the structured-search endpoint silently returned
+        # nothing for exactly the browse case it exists to serve.
+        wildcard = not query.strip() or query.strip() == "*"
+        must_clauses: list[dict] = [
+            {"match_all": {}} if wildcard else {"match": {"content": {"query": query}}}
+        ]
         filter_clauses = self._build_filter_clauses(filters)
 
         body = {

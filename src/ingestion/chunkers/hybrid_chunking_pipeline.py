@@ -8,6 +8,7 @@ from src.ingestion.chunkers.parent_child_chunker import ParentChildChunker
 from src.ingestion.chunkers.semantic_chunker import SemanticChunker, SemanticSegment
 from src.ingestion.chunkers.structure_chunker import StructureChunker
 from src.ingestion.extractors.regex_extractor import RegexSteelEntityExtractor
+from src.ingestion.parsing.drawing_detector import ContentKind, DrawingContentDetector
 from src.ingestion.parsing.parsed_document import ParsedDocument
 from src.monitoring.logger import get_logger
 
@@ -40,11 +41,15 @@ class HybridChunkingPipeline:
         parent_child_chunker: ParentChildChunker,
         validator: ChunkValidator,
         entity_extractor: RegexSteelEntityExtractor | None = None,
+        content_detector: DrawingContentDetector | None = None,
     ) -> None:
         self._structure_chunker = structure_chunker
         self._semantic_chunker = semantic_chunker
         self._parent_child_chunker = parent_child_chunker
         self._validator = validator
+        # Used only to narrow a MIXED page's verdict to a single chunk's
+        # text. Pure string work -- no I/O, no model, no token cost.
+        self._content_detector = content_detector or DrawingContentDetector()
         # Only the deterministic pass runs per chunk: it has no I/O and no
         # token cost, and char offsets only mean anything relative to the
         # text they were found in -- which is the chunk, not the document.
@@ -76,12 +81,7 @@ class HybridChunkingPipeline:
             position += len(section_chunks)
 
         self._attach_entities(all_chunks)
-
-        # Stamp provenance quality on every chunk, so a retrieved measurement
-        # can be told apart from an OCR'd one at answer time.
-        kind = parsed_document.classification.kind.value
-        for chunk in all_chunks:
-            chunk.chunk_metadata.content_kind = kind
+        self._attach_content_kind(all_chunks, parsed_document)
 
         ocr_metadata = parsed_document.ocr_metadata
         ocr_confidence = ocr_metadata.confidence if ocr_metadata.ran else None
@@ -115,6 +115,24 @@ class HybridChunkingPipeline:
             result = self._entity_extractor.extract_sync(chunk.content)
             if result.entities:
                 chunk.chunk_metadata.entities = [e.to_dict() for e in result.entities]
+
+    def _attach_content_kind(
+        self, chunks: list[DocumentChunk], parsed_document: ParsedDocument
+    ) -> None:
+        """Label each chunk with how *its own* text was obtained.
+
+        From the chunk's page, not the document, because one PDF routinely
+        holds a specification, a schedule, a plotted sheet and a scan. On a
+        page that is genuinely both -- a detail drawing above, erection notes
+        below -- the chunk's own text decides, so the notes are not filed as
+        drawing content merely for sharing a sheet with one.
+        """
+        detector = self._content_detector
+        for chunk in chunks:
+            page_kind = parsed_document.kind_for_page(chunk.chunk_metadata.page_number)
+            if page_kind is ContentKind.MIXED and detector is not None:
+                page_kind = detector.refine_kind_for_text(chunk.content, page_kind)
+            chunk.chunk_metadata.content_kind = page_kind.value
 
     def _is_drawing(self, parsed_document: ParsedDocument) -> bool:
         """Whether this document should be validated against the drawing OCR floor.

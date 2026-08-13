@@ -14,6 +14,14 @@ _ALNUM_RE = re.compile(r"[A-Za-z0-9]")
 # other signals instead.
 _SPARSE_ALNUM_TYPES = frozenset({ChunkType.TABLE})
 
+# ContentKind values that earn the lower OCR floor. Compared as strings
+# rather than importing the enum: the validator is a leaf and has no other
+# reason to depend on the parsing package. Kept in sync by
+# test_drawing_floor_covers_every_drawing_content_kind.
+_DRAWING_CONTENT_KINDS = frozenset(
+    {"vector_drawing", "scanned_drawing", "mixed", "cad_native"}
+)
+
 
 @dataclass
 class ValidationResult:
@@ -135,8 +143,27 @@ class ChunkValidator:
             if chunk.chunk_metadata.ocr_confidence is not None
             else ocr_confidence
         )
-        floor = self._min_ocr_confidence_drawing if is_drawing else self._min_ocr_confidence
+        floor = (
+            self._min_ocr_confidence_drawing
+            if self._chunk_is_drawing(chunk, is_drawing)
+            else self._min_ocr_confidence
+        )
         if effective_confidence is not None and effective_confidence < floor:
             return "low_ocr_confidence"
 
         return None
+
+    @staticmethod
+    def _chunk_is_drawing(chunk: DocumentChunk, document_is_drawing: bool) -> bool:
+        """Which floor this chunk answers to.
+
+        The chunk's own `content_kind` wins when it has one. A single PDF
+        routinely mixes a specification, a schedule and a plotted sheet, and
+        a document-wide flag would either hold the drawing pages to the prose
+        floor or wave the prose pages through on the drawing floor. The
+        argument remains the fallback for chunks that were never classified.
+        """
+        kind = chunk.chunk_metadata.content_kind
+        if kind is None:
+            return document_is_drawing
+        return kind in _DRAWING_CONTENT_KINDS
