@@ -84,7 +84,7 @@ class ParentChildChunker:
                 position += 1
 
         # Handle tables as standalone chunks
-        for i, table in enumerate(raw_document.tables):
+        for _i, table in enumerate(raw_document.tables):
             if not table.markdown.strip():
                 continue
             table_chunk = DocumentChunk(

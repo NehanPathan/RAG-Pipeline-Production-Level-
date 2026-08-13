@@ -13,7 +13,7 @@ mid-ingestion silently abandoned the document.
 from __future__ import annotations
 
 import uuid
-from typing import Any
+from typing import Any, ClassVar
 
 from src.config import get_settings
 from src.monitoring.logger import configure_logging, get_logger
@@ -77,7 +77,7 @@ class WorkerSettings:
     # One dispatch function, not one per job type: only the job id crosses
     # the queue, so adding a job type is a branch in JobRunner rather than a
     # new registration the worker must be redeployed to learn.
-    functions = [run_job]
+    functions: ClassVar[list[Any]] = [run_job]
     on_startup = startup
     on_shutdown = shutdown
     redis_settings = _redis_settings()

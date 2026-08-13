@@ -79,7 +79,7 @@ with tab_overview:
         # KPI cards
         kpi_keys = list(METRIC_LABELS.keys())
         cols = st.columns(len(kpi_keys))
-        for col, key in zip(cols, kpi_keys):
+        for col, key in zip(cols, kpi_keys, strict=False):
             val = metrics.get(key)
             col.metric(
                 METRIC_LABELS[key],
@@ -155,7 +155,7 @@ with tab_runs:
                 metrics = run.get("metrics", [])
                 if metrics:
                     m_cols = st.columns(len(metrics))
-                    for col, m in zip(m_cols, metrics):
+                    for col, m in zip(m_cols, metrics, strict=False):
                         col.metric(
                             METRIC_LABELS.get(m["name"], m["name"]),
                             f"{m['value']:.3f}",

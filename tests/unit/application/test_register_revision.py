@@ -100,7 +100,7 @@ class TestFirstRevision:
         assert result.superseded_document_id is None
 
     async def test_is_attached_to_a_drawing(self, harness):
-        use_case, drawings, *_ = harness
+        use_case, _drawings, *_ = harness
 
         result = await use_case.execute(_document(), drawing_number="S-104", revision_label="A")
 

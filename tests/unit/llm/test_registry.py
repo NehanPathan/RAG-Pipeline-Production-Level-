@@ -54,7 +54,7 @@ class TestFallbackChain:
         settings.small_llm_provider = "openai"
         settings.llm_fallback_providers = "ollama,openai"
         gateway = build_gateway(settings, "small")
-        assert [b.name for b in gateway.chain][0] == "openai"
+        assert next(b.name for b in gateway.chain) == "openai"
 
     def test_duplicates_are_removed(self, settings):
         """A chain of ["openai", "openai"] would retry the same failing

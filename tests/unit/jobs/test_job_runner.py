@@ -88,7 +88,7 @@ class TestSuccess:
         source.write_bytes(b"x")
         document = _document()
         pipeline = _FakePipeline()
-        runner, repo = _runner(document, pipeline)
+        runner, _repo = _runner(document, pipeline)
 
         job = await runner.run(_job(document.id, source))
 
@@ -154,7 +154,7 @@ class TestFailure:
         source = tmp_path / "S-104.dxf"
         source.write_bytes(b"x")
         document = _document()
-        runner, repo = _runner(document, _FakePipeline(fail=True))
+        runner, _repo = _runner(document, _FakePipeline(fail=True))
         job = _job(document.id, source)
 
         for _ in range(3):

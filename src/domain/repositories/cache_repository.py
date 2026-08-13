@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from abc import ABC, abstractmethod
 
 from src.domain.value_objects.cache_entry import SemanticCacheEntry

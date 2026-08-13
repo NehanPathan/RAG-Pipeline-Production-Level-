@@ -108,7 +108,7 @@ if not st.session_state.messages:
         "Summarise the key points of the latest policy document",
     ]
     cols = st.columns(len(examples))
-    for col, example in zip(cols, examples):
+    for col, example in zip(cols, examples, strict=False):
         if col.button(example, use_container_width=True, key=f"eg_{example[:12]}"):
             st.session_state._pending_prompt = example
             st.rerun()

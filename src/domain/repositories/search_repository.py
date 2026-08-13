@@ -63,6 +63,27 @@ class SearchRepository(ABC):
         ...
 
     @abstractmethod
+    async def aggregate_facets(
+        self,
+        fields: list[str],
+        filters: BM25SearchFilter | None = None,
+        max_values: int = 50,
+    ) -> dict[str, list[tuple[str, int]]]:
+        """Distinct values and counts for the given fields, within scope.
+
+        This is the corpus's actual vocabulary. Without it, FilterGenerator
+        infers a domain and tags from the wording of a question with no
+        knowledge of which values exist -- so one wrong guess ("domain=Sales"
+        for an Operations document) makes the whole corpus invisible and the
+        system answers "no supporting passage was retrieved" while sitting on
+        the document asked about.
+
+        The caller's access filters are applied, so a facet list can never
+        reveal that a project or drawing exists that the caller cannot read.
+        """
+        ...
+
+    @abstractmethod
     async def delete_by_document(self, document_id: uuid.UUID) -> int:
         ...
 

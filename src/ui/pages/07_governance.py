@@ -113,7 +113,7 @@ with tab_status:
         st.subheader("Kill switches")
         flags = status["flags"]
         cols = st.columns(len(flags))
-        for col, (name, enabled) in zip(cols, flags.items()):
+        for col, (name, enabled) in zip(cols, flags.items(), strict=False):
             col.metric(name.replace("_enabled", ""), "ON" if enabled else "OFF")
 
 # ---------------------------------------------------------------- Govern

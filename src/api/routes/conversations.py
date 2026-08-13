@@ -81,7 +81,7 @@ async def get_conversation(
         raise HTTPException(
             status_code=http_status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="conversation_id is not a valid UUID.",
-        )
+        ) from None
 
     repo = get_conversation_repository()
     if not await repo.owns(conversation_uuid, principal.user_id):
@@ -93,7 +93,7 @@ async def get_conversation(
         )
         raise HTTPException(
             status_code=http_status.HTTP_404_NOT_FOUND, detail="Conversation not found"
-        )
+        ) from None
 
     messages = await repo.get_messages(conversation_uuid)
     return [

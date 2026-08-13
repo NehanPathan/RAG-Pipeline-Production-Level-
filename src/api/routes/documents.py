@@ -6,6 +6,7 @@ from pathlib import Path
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
 from fastapi import status as http_status
 from pydantic import BaseModel
+from starlette.responses import StreamingResponse
 
 from src.api.dependencies import (
     enqueue_ingestion,
@@ -158,7 +159,7 @@ async def upload_document(
         raise HTTPException(
             status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Ingestion is temporarily disabled by an administrator.",
-        )
+        ) from None
 
     classification = Sensitivity.parse(sensitivity, policy.default_sensitivity)
     if not classification.readable_with(principal.clearance):
@@ -176,7 +177,7 @@ async def upload_document(
             status_code=http_status.HTTP_403_FORBIDDEN,
             detail=f"Cannot classify a document as '{classification.value}' "
             f"with clearance '{principal.clearance.value}'.",
-        )
+        ) from None
 
     # Validate file type
     file_ext = Path(file.filename or "").suffix.lstrip(".").lower()
@@ -184,7 +185,7 @@ async def upload_document(
         raise HTTPException(
             status_code=http_status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"File type '{file_ext}' is not supported. Allowed: {settings.allowed_file_types}",
-        )
+        ) from None
 
     # Stream to durable storage, enforcing the size limit as it goes.
     #
@@ -261,6 +262,7 @@ async def upload_document(
     # other request on a single-worker uvicorn, and an API deploy mid-run
     # silently abandoned the document.
     job = await enqueue_ingestion(document.id, file_path)
+    logger.info("ingestion_enqueued", doc_id=str(document.id), job_id=str(job.id))
 
     documents_ingested.labels(file_type=file_ext, status="pending").inc()
 
@@ -335,7 +337,7 @@ async def get_document_intelligence(
         raise HTTPException(
             status_code=http_status.HTTP_404_NOT_FOUND,
             detail="No Document Intelligence data for this document (not yet indexed, or indexed before Phase 4A).",
-        )
+        ) from None
     return _to_intelligence_response(summary)
 
 
@@ -383,7 +385,7 @@ async def reclassify_document(
             status_code=http_status.HTTP_403_FORBIDDEN,
             detail=f"Cannot set classification '{new_classification.value}' "
             f"with clearance '{principal.clearance.value}'.",
-        )
+        ) from None
 
     document.classify(new_classification, retention_days=policy.retention_days)
     await get_document_repository().update(document)
@@ -485,7 +487,7 @@ async def _load_readable_document(document_id: str, principal: Principal) -> Doc
         raise HTTPException(
             status_code=http_status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="document_id is not a valid UUID.",
-        )
+        ) from None
 
     document = await get_document_repository().get_by_id(doc_uuid)
     if document is None:
@@ -602,7 +604,8 @@ async def reprocess_document(
     twice -- two workers writing the same chunks would leave the loser's
     partial output behind as duplicates.
     """
-    document = await _load_readable_document(document_id, principal)
+    # Called for its side effect: 404s if the caller may not read it.
+    await _load_readable_document(document_id, principal)
     doc_uuid = uuid.UUID(document_id)
 
     if await get_job_repository().has_active_job(doc_uuid):
@@ -668,3 +671,46 @@ async def list_document_jobs(
         )
         for job in jobs
     ]
+
+
+@router.get("/documents/{document_id}/original")
+async def download_original(
+    document_id: str,
+    principal: Principal = Depends(get_principal),
+) -> StreamingResponse:
+    """Stream the stored original.
+
+    Proxied through the API rather than handed out as a presigned URL. A
+    presigned URL bypasses clearance and project scope entirely -- the store
+    has no idea who the caller is -- and for a corpus of client structural
+    drawings that is the one thing this system must not do. The cost is that
+    bytes pass through the API; the benefit is that every download is an
+    authorised download.
+    """
+    document = await _load_readable_document(document_id, principal)
+    if not document.file_path:
+        raise HTTPException(
+            status_code=http_status.HTTP_404_NOT_FOUND,
+            detail="No stored original for this document.",
+        ) from None
+
+    blob_store = get_blob_store(get_settings())
+    if not await blob_store.exists(document.file_path):
+        # The row survived but the blob did not -- the exact symptom of the
+        # unmounted-volume bug this storage layer replaced.
+        logger.error(
+            "document_blob_missing", doc_id=document_id, key=document.file_path
+        )
+        raise HTTPException(
+            status_code=http_status.HTTP_410_GONE,
+            detail="The stored file is no longer available.",
+        ) from None
+
+    return StreamingResponse(
+        blob_store.get_stream(document.file_path),
+        media_type="application/octet-stream",
+        headers={
+            "Content-Disposition": f'attachment; filename="{document.file_name}"',
+            "X-Document-Id": str(document.id),
+        },
+    )

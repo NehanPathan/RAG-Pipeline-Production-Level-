@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import itertools
 import uuid
 
 from src.domain.entities.document import DocumentChunk
@@ -83,7 +84,7 @@ class DocumentIntelligenceRecorder:
         )
 
         edges: list[SimilarityEdge] = []
-        for a, b in zip(embedded_chunks, embedded_chunks[1:]):
+        for a, b in itertools.pairwise(embedded_chunks):
             if len(edges) >= self._max_graph_edges:
                 break
             similarity = self._cosine_similarity(a.embedding, b.embedding)

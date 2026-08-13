@@ -60,7 +60,7 @@ async def submit_feedback(
         raise HTTPException(
             status_code=http_status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Provide either message_id or trace_id to identify the answer.",
-        )
+        ) from None
 
     message_uuid = None
     if request.message_id:
@@ -70,7 +70,7 @@ async def submit_feedback(
             raise HTTPException(
                 status_code=http_status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="message_id is not a valid UUID.",
-            )
+            ) from None
 
     accepted = sorted({t for t in request.tags if t in ALLOWED_TAGS})
     ignored = sorted({t for t in request.tags if t not in ALLOWED_TAGS})

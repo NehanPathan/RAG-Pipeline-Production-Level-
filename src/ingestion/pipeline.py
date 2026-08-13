@@ -137,7 +137,7 @@ class IngestionPipeline:
             child_chunks = [c for c in chunks if c.chunk_type.value in ("child", "table", "standalone")]
             texts = [c.content for c in child_chunks]
             embeddings = await retrieval_provider.embed_texts(texts)
-            for chunk, embedding in zip(child_chunks, embeddings):
+            for chunk, embedding in zip(child_chunks, embeddings, strict=False):
                 chunk.embedding = embedding
                 chunk.embedding_model = retrieval_provider.model_id
 

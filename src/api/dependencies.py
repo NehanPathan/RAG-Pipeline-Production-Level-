@@ -17,6 +17,10 @@ from src.infrastructure.database.postgres.document_intelligence_repository impor
 )
 from src.infrastructure.database.postgres.document_repository import PostgresDocumentRepository
 from src.infrastructure.database.postgres.job_repository import PostgresJobRepository
+from src.infrastructure.database.postgres.project_repository import (
+    PostgresDrawingRepository,
+    PostgresProjectRepository,
+)
 from src.infrastructure.database.redis.connection import RedisCache, get_redis_client
 from src.infrastructure.search.elasticsearch.repository import (
     ElasticsearchSearchRepository,
@@ -176,6 +180,24 @@ async def ensure_search_schema() -> None:
     await _get_vector_repo().ensure_payload_indexes()
     await _get_search_repo().ensure_mapping()
 
+
+
+_project_repo: PostgresProjectRepository | None = None
+_drawing_repo: PostgresDrawingRepository | None = None
+
+
+def get_project_repository() -> PostgresProjectRepository:
+    global _project_repo
+    if _project_repo is None:
+        _project_repo = PostgresProjectRepository(get_session_factory())
+    return _project_repo
+
+
+def get_drawing_repository() -> PostgresDrawingRepository:
+    global _drawing_repo
+    if _drawing_repo is None:
+        _drawing_repo = PostgresDrawingRepository(get_session_factory())
+    return _drawing_repo
 
 
 _job_repo: PostgresJobRepository | None = None

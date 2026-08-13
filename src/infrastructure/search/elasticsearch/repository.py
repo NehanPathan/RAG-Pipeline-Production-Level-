@@ -178,6 +178,42 @@ class ElasticsearchSearchRepository(SearchRepository):
 
         return result
 
+    async def aggregate_facets(
+        self,
+        fields: list[str],
+        filters: BM25SearchFilter | None = None,
+        max_values: int = 50,
+    ) -> dict[str, list[tuple[str, int]]]:
+        """Terms aggregations over keyword fields, inside the access filter.
+
+        `size: 0` because only the buckets are wanted -- returning documents
+        alongside them would move megabytes to build a filter sidebar.
+        """
+        if not fields:
+            return {}
+
+        body = {
+            "size": 0,
+            "query": {"bool": {"filter": self._build_filter_clauses(filters)}},
+            "aggs": {field: {"terms": {"field": field, "size": max_values}} for field in fields},
+        }
+        try:
+            response = await self._client.search(index=self._index_name, body=body)
+        except Exception as exc:
+            # A missing index or an un-aggregatable field should not take the
+            # UI down; an empty facet list degrades to "no filters offered".
+            logger.warning("elasticsearch_facets_failed", fields=fields, error=str(exc))
+            return {}
+
+        aggregations = response.get("aggregations") or {}
+        return {
+            field: [
+                (str(bucket["key"]), int(bucket["doc_count"]))
+                for bucket in aggregations.get(field, {}).get("buckets", [])
+            ]
+            for field in fields
+        }
+
     async def delete_by_document(self, document_id: uuid.UUID) -> int:
         try:
             response = await self._client.delete_by_query(

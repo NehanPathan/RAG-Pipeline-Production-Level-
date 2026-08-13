@@ -76,13 +76,13 @@ async def start_evaluation_run(
             raise HTTPException(
                 status_code=http_status.HTTP_404_NOT_FOUND,
                 detail=str(exc),
-            )
+            ) from None
 
     if not dataset.samples:
         raise HTTPException(
             status_code=http_status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Dataset is empty.",
-        )
+        ) from None
 
     scorer_llm = get_llm_provider(settings, role="small")
     pipeline = get_query_pipeline()

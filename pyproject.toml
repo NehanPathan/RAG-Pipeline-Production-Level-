@@ -210,6 +210,27 @@ ignore = [
     # route uses it (see src/governance/rbac.py), so this must be an allowance
     # rather than a per-line noqa on every endpoint.
     "B008",
+    # `class X(str, Enum)` is this codebase's universal convention -- Route,
+    # ChunkType, Sensitivity, JobStatus and a dozen more. UP042 prefers
+    # StrEnum, but converting some and not others is worse than either, and
+    # converting all of them is churn with no behavioural gain.
+    "UP042",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Streamlit derives page order and titles from the filename, so `01_chat.py`
+# is required rather than sloppy.
+"src/ui/pages/*" = [
+    "N999",
+    # En dashes and angle quotes in user-facing copy are typography, not
+    # typos. RUF001 is guarding against homoglyph attacks in identifiers,
+    # which is not what a Streamlit caption is.
+    "RUF001",
+]
+"src/ui/*" = [
+    # `try/except/pass` around a best-effort UI refresh reads more clearly
+    # than contextlib.suppress at these call sites.
+    "SIM105",
 ]
 
 [tool.ruff.lint.isort]
