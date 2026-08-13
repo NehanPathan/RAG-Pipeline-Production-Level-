@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
 
 from src.domain.repositories.project_repository import ProjectRepository
@@ -187,6 +187,7 @@ class QueryPipeline:
         query: str,
         user_id: uuid.UUID | None = None,
         principal: Principal | None = None,
+        history: Sequence[tuple[str, str]] | None = None,
     ) -> AsyncIterator[dict]:
         """Answer a query, guaranteeing every `done` event is fully stamped.
 
@@ -207,7 +208,7 @@ class QueryPipeline:
         """
         redacted = self._redact_question(query)
 
-        async for event in self._answer_impl(redacted, user_id, principal):
+        async for event in self._answer_impl(redacted, user_id, principal, history):
             if event.get("type") == "done":
                 event.setdefault("question", redacted)
                 event.setdefault("route", Route.RAG.value)
@@ -223,6 +224,7 @@ class QueryPipeline:
         query: str,
         user_id: uuid.UUID | None = None,
         principal: Principal | None = None,
+        history: Sequence[tuple[str, str]] | None = None,
     ) -> AsyncIterator[dict]:
         """Run the query graph, forwarding its custom stream as SSE events.
 
@@ -243,6 +245,7 @@ class QueryPipeline:
             "principal": principal or anonymous_principal(),
             "trace_id": get_current_trace_id(),
             "started_at": time.perf_counter(),
+            "history": list(history or ()),
         }
 
         async for event in self._graph.astream(state, stream_mode="custom"):
@@ -404,10 +407,16 @@ class QueryPipeline:
         }
 
     async def _retrieve(
-        self, query: str, user_id: uuid.UUID | None, principal: Principal
+        self,
+        query: str,
+        user_id: uuid.UUID | None,
+        principal: Principal,
+        history: Sequence[tuple[str, str]] | None = None,
     ) -> RetrievalInspection:
         start = time.perf_counter()
-        processed = await self._query_agent.process(query, user_id=user_id)
+        processed = await self._query_agent.process(
+            query, user_id=user_id, history=history
+        )
         query_processing_ms = int((time.perf_counter() - start) * 1000)
 
         # MAP: overwrite whatever FilterGenerator produced for these fields.

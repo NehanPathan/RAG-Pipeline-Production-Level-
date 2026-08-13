@@ -71,9 +71,17 @@ class DxfReader:
         self,
         max_entities: int = 500_000,
         ignored_layers: tuple[str, ...] = _DEFAULT_IGNORED_LAYERS,
+        max_block_depth: int = 8,
     ) -> None:
         self._max_entities = max_entities
         self._ignored = {layer.upper() for layer in ignored_layers}
+        # How far to follow INSERT -> block -> INSERT. Real drawings nest a
+        # few levels; the cap exists because a malformed file can reference
+        # itself, and a self-referencing block would otherwise recurse until
+        # the process died.
+        self._max_block_depth = max_block_depth
+        # Set per `read()`; the block table is what INSERTs resolve against.
+        self._blocks: Any = None
 
     def read(self, file_path: Path) -> CadDocument:
         """Parse a DXF. Synchronous and CPU-bound; the loader runs it in a thread."""
@@ -82,6 +90,8 @@ class DxfReader:
         # `readfile` is ezdxf's documented entry point; its package just does
         # not declare an explicit re-export for the type checker to follow.
         doc = ezdxf.readfile(str(file_path))  # type: ignore[attr-defined]
+        # Block definitions are needed to follow INSERTs into their contents.
+        self._blocks = doc.blocks
         cad = CadDocument(
             layers=sorted(layer.dxf.name for layer in doc.layers),
             insunits=str(doc.header.get("$INSUNITS", "")),
@@ -120,7 +130,14 @@ class DxfReader:
         )
         return cad
 
-    def _read_space(self, cad: CadDocument, layout_index: int, space: Any) -> None:
+    def _read_space(
+        self,
+        cad: CadDocument,
+        layout_index: int,
+        space: Any,
+        depth: int = 0,
+        seen_blocks: frozenset[str] = frozenset(),
+    ) -> None:
         for entity in space:
             cad.entity_count += 1
             if cad.entity_count > self._max_entities:
@@ -135,12 +152,58 @@ class DxfReader:
             if layer.upper() in self._ignored:
                 continue
 
+            # Count what is drawn on each layer, whether or not it is text.
+            # A layer holding only geometry -- S-BOLTS is 26 lines, 16
+            # polylines and 13 block references with not one character of
+            # text on it -- produces no text and so used to leave no trace at
+            # all. The drawing plainly *has* a bolts layer; the pipeline
+            # simply could not say so.
+            cad.entities_per_layer.setdefault(layer, {})
+            counts = cad.entities_per_layer[layer]
+            counts[dxftype] = counts.get(dxftype, 0) + 1
+
             if dxftype in _TEXT_TYPES:
                 self._read_text(cad, layout_index, entity, dxftype, layer)
             elif dxftype == "INSERT":
                 self._read_insert(cad, layout_index, entity, layer)
+                self._read_block_contents(cad, layout_index, entity, depth, seen_blocks)
             elif dxftype.startswith("DIMENSION"):
                 self._read_dimension(cad, layout_index, entity, layer)
+
+    def _read_block_contents(
+        self,
+        cad: CadDocument,
+        layout_index: int,
+        insert: Any,
+        depth: int,
+        seen_blocks: frozenset[str],
+    ) -> None:
+        """Follow an INSERT into the block it references.
+
+        Without this, everything a block contains is invisible. On the
+        reference drawing that is 35 of 45 non-empty text entities -- 78% --
+        including the entire bolt specification (`ALL BOLTS 3/4" DIA. A325`),
+        the column, beam and purlin callouts, the angle and bent-plate sizes,
+        and every dimension. Reading model space alone saw the disclaimer and
+        the drawing number, and nothing an engineer would ask about.
+
+        This is not exotic: a CAD user grouping annotation into a block is
+        ordinary practice, and R12 exports do it automatically. `seen_blocks`
+        guards against a block that references itself, which would otherwise
+        recurse forever.
+        """
+        if depth >= self._max_block_depth:
+            return
+        name = str(getattr(insert.dxf, "name", ""))
+        if not name or name in seen_blocks or self._blocks is None:
+            return
+        try:
+            block = self._blocks.get(name)
+        except Exception:  # pragma: no cover - malformed reference
+            return
+        if block is None:
+            return
+        self._read_space(cad, layout_index, block, depth + 1, seen_blocks | {name})
 
     def _read_text(
         self, cad: CadDocument, layout_index: int, entity: Any, dxftype: str, layer: str
@@ -195,9 +258,7 @@ class DxfReader:
             )
         )
 
-    def _read_dimension(
-        self, cad: CadDocument, layout_index: int, entity: Any, layer: str
-    ) -> None:
+    def _read_dimension(self, cad: CadDocument, layout_index: int, entity: Any, layer: str) -> None:
         measurement = getattr(entity.dxf, "actual_measurement", None)
         if measurement is None:
             measurement = getattr(entity, "get_measurement", lambda: None)()

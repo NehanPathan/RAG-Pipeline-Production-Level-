@@ -22,6 +22,10 @@ from src.routing.routes import RouteDecision
 class QueryState(TypedDict, total=False):
     # Request
     query: str
+    #: Recent (role, text) turns, oldest first, already bounded by the
+    #: caller. Carried so the rewrite step can resolve a follow-up like
+    #: "what about the bolts?" against the drawing under discussion.
+    history: list[tuple[str, str]]
     user_id: uuid.UUID | None
     principal: Principal
     trace_id: str

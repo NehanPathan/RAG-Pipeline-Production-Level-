@@ -270,3 +270,75 @@ class TestFacets:
 
         assert search_repo.last_filters is not None
         assert search_repo.last_filters.sensitivity_in
+
+
+# --- Conversation history is bounded and scoped -----------------------------
+
+
+class TestConversationHistory:
+    """What a follow-up may see.
+
+    Two properties, and the second is a security one: history is bounded so a
+    long conversation cannot grow every request without limit, and it is
+    scoped to a conversation the caller owns so a passed-in id cannot fold
+    someone else's turns into the caller's query rewrite.
+    """
+
+    async def test_history_is_bounded(self, monkeypatch):
+        from src.api.routes import chat as chat_routes
+
+        class _Repo:
+            async def owns(self, conversation_id, user_id):
+                return True
+
+            async def get_messages(self, conversation_id):
+                from types import SimpleNamespace
+
+                return [
+                    SimpleNamespace(role=SimpleNamespace(value="user"), content=f"turn {i}")
+                    for i in range(50)
+                ]
+
+        monkeypatch.setattr(chat_routes, "get_conversation_repository", lambda: _Repo())
+        principal = _principal_for_history()
+
+        history = await chat_routes._recent_history(uuid.uuid4(), principal)
+
+        assert len(history) == chat_routes.MAX_HISTORY_TURNS
+        assert history[-1] == ("user", "turn 49"), "the most recent turns, not the oldest"
+
+    async def test_a_conversation_the_caller_does_not_own_yields_nothing(self, monkeypatch):
+        """Otherwise a caller could pass someone else's conversation_id and
+        have its content folded into their query rewrite -- an information
+        leak through a feature that looks like convenience."""
+        from src.api.routes import chat as chat_routes
+
+        class _Repo:
+            async def owns(self, conversation_id, user_id):
+                return False
+
+            async def get_messages(self, conversation_id):  # pragma: no cover
+                raise AssertionError("must not read messages of an unowned conversation")
+
+        monkeypatch.setattr(chat_routes, "get_conversation_repository", lambda: _Repo())
+
+        assert await chat_routes._recent_history(uuid.uuid4(), _principal_for_history()) == []
+
+    async def test_an_unavailable_repository_degrades_rather_than_fails(self, monkeypatch):
+        from src.api.routes import chat as chat_routes
+
+        class _Repo:
+            async def owns(self, conversation_id, user_id):
+                raise RuntimeError("database down")
+
+        monkeypatch.setattr(chat_routes, "get_conversation_repository", lambda: _Repo())
+
+        assert await chat_routes._recent_history(uuid.uuid4(), _principal_for_history()) == []
+
+
+def _principal_for_history():
+    from src.governance.rbac import Principal
+
+    return Principal(
+        user_id=uuid.uuid4(), role="analyst", clearance=Sensitivity.CONFIDENTIAL, email="a@b"
+    )

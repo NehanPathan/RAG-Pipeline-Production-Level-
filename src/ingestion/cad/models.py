@@ -115,6 +115,26 @@ class CadDocument:
     entity_count: int = 0
     proxy_entity_count: int = 0
     insunits: str = ""
+    #: layer name -> {entity type: count}. What is actually *drawn* on each
+    #: layer, as opposed to which layers the file declares. A structural
+    #: drawing's layers are its semantics -- S-BOLTS, S-SECT_STEEL, S-DIMS --
+    #: and a layer carrying only geometry has no text to speak for it, so
+    #: without this it left no trace downstream and "what layers are present"
+    #: was unanswerable from a drawing that plainly had them.
+    entities_per_layer: dict[str, dict[str, int]] = field(default_factory=dict)
+
+    @property
+    def populated_layers(self) -> list[str]:
+        """Layers with at least one entity, most-drawn first.
+
+        Distinct from `layers`, which is the declared table -- a template
+        typically declares many more layers than a given sheet uses, and
+        listing those would describe the template rather than the drawing.
+        """
+        return sorted(
+            self.entities_per_layer,
+            key=lambda name: (-sum(self.entities_per_layer[name].values()), name),
+        )
 
     @property
     def text_entity_count(self) -> int:

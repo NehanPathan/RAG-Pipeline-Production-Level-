@@ -59,9 +59,7 @@ def cleared_principal() -> Principal:
     anonymous principal with `public` clearance, which correctly filters out
     the internal-by-default chunks these fixtures produce.
     """
-    return Principal(
-        user_id=uuid.uuid4(), role=Role.ADMIN.value, clearance=Sensitivity.RESTRICTED
-    )
+    return Principal(user_id=uuid.uuid4(), role=Role.ADMIN.value, clearance=Sensitivity.RESTRICTED)
 
 
 @pytest.fixture
@@ -133,7 +131,13 @@ def semantic_cache():
 
 @pytest.fixture
 def pipeline(
-    query_agent, hybrid_retriever, fuser, reranker, context_processor, answer_pipeline, semantic_cache
+    query_agent,
+    hybrid_retriever,
+    fuser,
+    reranker,
+    context_processor,
+    answer_pipeline,
+    semantic_cache,
 ):
     return QueryPipeline(
         query_agent=query_agent,
@@ -178,14 +182,18 @@ async def test_inspect_populates_trace_timings_and_counts(pipeline, cleared_prin
 
 
 @pytest.mark.asyncio
-async def test_inspect_does_not_invoke_context_processor(pipeline, context_processor, cleared_principal):
+async def test_inspect_does_not_invoke_context_processor(
+    pipeline, context_processor, cleared_principal
+):
     await pipeline.inspect("query", principal=cleared_principal)
 
     context_processor.process.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_answer_returns_cached_result_on_hit(pipeline, semantic_cache, query_agent, cleared_principal):
+async def test_answer_returns_cached_result_on_hit(
+    pipeline, semantic_cache, query_agent, cleared_principal
+):
     semantic_cache.lookup = AsyncMock(
         return_value=SemanticCacheEntry(
             query_text="q", answer="cached answer", citations=[{"index": 1}]
@@ -213,12 +221,16 @@ async def test_answer_runs_full_pipeline_on_cache_miss(
 
 
 @pytest.mark.asyncio
-async def test_answer_stores_result_in_cache_after_done(pipeline, semantic_cache, cleared_principal):
+async def test_answer_stores_result_in_cache_after_done(
+    pipeline, semantic_cache, cleared_principal
+):
     _ = [e async for e in pipeline.answer("my query", principal=cleared_principal)]
 
     semantic_cache.store.assert_called_once()
     call = semantic_cache.store.call_args
-    assert call.args[0] == "my query"
+    # The resolved query, not the raw one -- see
+    # test_a_follow_up_is_not_cached_under_its_own_words.
+    assert call.args[0] == "rewritten query"
     assert call.args[1] == "Hello [1]"
     assert call.kwargs["model_used"] == "gpt-4o"
 
@@ -355,7 +367,9 @@ class TestDoneEventStamping:
 
     @pytest.mark.asyncio
     async def test_rag_answer_carries_the_question(self, pipeline, cleared_principal):
-        events = [e async for e in pipeline.answer("what is the policy", principal=cleared_principal)]
+        events = [
+            e async for e in pipeline.answer("what is the policy", principal=cleared_principal)
+        ]
         done = next(e for e in events if e["type"] == "done")
         assert done["question"] == "what is the policy"
 
@@ -399,3 +413,34 @@ class TestDoneEventStamping:
         done = next(e for e in events if e["type"] == "done")
         for key in ("question", "route", "route_source", "grounded", "answer", "citations"):
             assert key in done, f"done event is missing {key!r}"
+
+
+@pytest.mark.asyncio
+async def test_a_follow_up_is_not_cached_under_its_own_words(
+    pipeline, semantic_cache, cleared_principal
+):
+    """The semantic cache has no notion of a conversation.
+
+    Keyed on query similarity alone, a follow-up cached under its own words
+    is served to every other conversation that phrases one the same way:
+    "What about the bolts?" asked about one drawing came back verbatim, cited
+    and confident, for a different drawing in a different conversation.
+
+    Storing the resolved form fixes it without a second cache key. An
+    elliptical question resolves to something naming its own subject, which
+    no other conversation's raw text matches; a self-contained question
+    resolves to roughly itself and still caches normally.
+    """
+    _ = [
+        e
+        async for e in pipeline.answer(
+            "what about the bolts?",
+            principal=cleared_principal,
+            history=[("user", "tell me about SSD09.0-02"), ("assistant", "a beam connection")],
+        )
+    ]
+
+    stored_key = semantic_cache.store.call_args.args[0]
+    assert stored_key != "what about the bolts?", (
+        "an elliptical follow-up cached under its raw text leaks across conversations"
+    )

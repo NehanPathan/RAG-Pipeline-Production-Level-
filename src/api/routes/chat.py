@@ -99,6 +99,40 @@ async def chat(
     )
 
 
+# How many prior turns a follow-up may see. Bounded deliberately: sending the
+# whole conversation grows every request without limit, costs more on each
+# turn than the last, and eventually pushes the retrieved passages out of the
+# context window -- the answer getting worse as the conversation gets longer.
+# A reference like "the bolts" points at something recent.
+MAX_HISTORY_TURNS = 6
+
+
+async def _recent_history(
+    conversation_id: uuid.UUID, principal: Principal
+) -> list[tuple[str, str]]:
+    """The tail of this conversation, as (role, text), oldest first.
+
+    Scoped to the conversation *and* checked for ownership. Reading turns by
+    id alone would let a caller pass someone else's conversation_id and have
+    its content folded into their query rewrite -- an information leak
+    through a feature that looks like convenience.
+    """
+    if principal.user_id is None:
+        return []
+    repository = get_conversation_repository()
+    try:
+        if not await repository.owns(conversation_id, principal.user_id):
+            return []
+        messages = await repository.get_messages(conversation_id)
+    except Exception as exc:
+        # History is an enhancement; losing it degrades a follow-up to a
+        # literal question rather than failing the request.
+        logger.warning("chat_history_unavailable", error=str(exc))
+        return []
+
+    return [(m.role.value, m.content) for m in messages[-MAX_HISTORY_TURNS:]]
+
+
 async def _stream_response(
     query: str,
     principal: Principal,
@@ -120,7 +154,8 @@ async def _stream_response(
     # dataset later (the promotion step looks up the question via the message).
     message_id = uuid.uuid4()
 
-    async for event in use_case.execute(query, principal=principal):
+    history = await _recent_history(conversation_id, principal)
+    async for event in use_case.execute(query, principal=principal, history=history):
         if event["type"] == "done":
             event["latency_ms"] = int((time.time() - start) * 1000)
             event["message_id"] = str(message_id)
@@ -171,7 +206,8 @@ async def _collect_response(
     refused = False
     meta: dict = {}
 
-    async for event in use_case.execute(query, principal=principal):
+    history = await _recent_history(conversation_id, principal)
+    async for event in use_case.execute(query, principal=principal, history=history):
         if event["type"] == "done":
             answer = event["answer"]
             citations = event["citations"]

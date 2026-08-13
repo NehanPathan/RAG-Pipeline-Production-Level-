@@ -310,7 +310,10 @@ def _build_query_pipeline() -> QueryPipeline:
         expander=QueryExpander(small_llm),
         classifier=IntentClassifier(small_llm),
         source_selector=SourceSelector(),
-        filter_generator=FilterGenerator(small_llm),
+        # The search repository doubles as the tag vocabulary: a generated
+        # tag is only applied if the corpus actually uses it, so a guessed
+        # keyword cannot silently empty the result set.
+        filter_generator=FilterGenerator(small_llm, vocabulary=_get_search_repo()),
         expansion_count=settings.query_expansion_count,
     )
 

@@ -138,7 +138,11 @@ class QueryNodes:
 
         if route is Route.REFUSE:
             answers_total.labels(outcome="refused").inc()
-            writer(self._p._done("I need an actual question to answer.", decision, trace_id, refused=True))
+            writer(
+                self._p._done(
+                    "I need an actual question to answer.", decision, trace_id, refused=True
+                )
+            )
             return {"finished": True}
 
         if route is Route.GREETING:
@@ -224,12 +228,15 @@ class QueryNodes:
 
         answer = self._p._redact_answer("".join(tokens))
         answers_total.labels(outcome="served").inc()
-        query_latency.labels(
-            intent="llm_knowledge", provider=self._p._direct_llm.model_id
-        ).observe(time.perf_counter() - state["started_at"])
+        query_latency.labels(intent="llm_knowledge", provider=self._p._direct_llm.model_id).observe(
+            time.perf_counter() - state["started_at"]
+        )
         writer(
             self._p._done(
-                answer, state["decision"], state["trace_id"], model_used=self._p._direct_llm.model_id
+                answer,
+                state["decision"],
+                state["trace_id"],
+                model_used=self._p._direct_llm.model_id,
             )
         )
         return {"finished": True}
@@ -238,7 +245,10 @@ class QueryNodes:
 
     async def retrieve(self, state: QueryState) -> dict[str, Any]:
         inspection = await self._p._retrieve(
-            state["query"], state.get("user_id"), state["principal"]
+            state["query"],
+            state.get("user_id"),
+            state["principal"],
+            history=state.get("history"),
         )
         return {"inspection": inspection}
 
@@ -358,8 +368,23 @@ class QueryNodes:
 
             answers_total.labels(outcome="served").inc()
             if state["flags"].semantic_cache_enabled:
+                # Cached under the *resolved* query, not the raw one.
+                #
+                # The cache is keyed on query similarity and has no notion of
+                # a conversation, so a follow-up cached under its own words
+                # is served to every other conversation that phrases one the
+                # same way. "What about the bolts?" asked about one drawing
+                # came back verbatim for a different drawing in a different
+                # conversation -- the answer confident, cited, and about the
+                # wrong sheet.
+                #
+                # Storing the resolved form fixes it without a second cache
+                # key: an elliptical question resolves to something naming
+                # its own subject, which no other conversation's raw text
+                # matches, while a self-contained question resolves to
+                # roughly itself and still caches normally.
                 await self._p._semantic_cache.store(
-                    state["query"],
+                    inspection.processed_query.rewritten_query or state["query"],
                     answer_text,
                     citation_payload,
                     model_used=event.get("model_used", ""),

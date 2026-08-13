@@ -54,9 +54,7 @@ class DwgConverter(Protocol):
 
 
 def _run(command: list[str], timeout: float) -> int:
-    completed = subprocess.run(
-        command, capture_output=True, timeout=timeout, check=False
-    )
+    completed = subprocess.run(command, capture_output=True, timeout=timeout, check=False)
     if completed.returncode != 0:
         logger.warning(
             "dwg_converter_nonzero_exit",

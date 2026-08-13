@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections.abc import Sequence
 
 from src.domain.value_objects.processed_query import ProcessedQuery
 from src.monitoring.stage_tracer import traced_stage
@@ -34,9 +35,18 @@ class QueryAgent:
         self._filter_generator = filter_generator
         self._expansion_count = expansion_count
 
-    async def process(self, query: str, user_id: uuid.UUID | None = None) -> ProcessedQuery:
+    async def process(
+        self,
+        query: str,
+        user_id: uuid.UUID | None = None,
+        history: Sequence[tuple[str, str]] | None = None,
+    ) -> ProcessedQuery:
         async with traced_stage("query_intelligence", query=query) as stage:
-            rewritten = await self._rewriter.rewrite(query)
+            # Follow-up resolution belongs to the rewrite step, which is
+            # already the stage that makes a query self-contained. Everything
+            # after this -- expansion, classification, routing, retrieval --
+            # sees one query and does not care what produced it.
+            rewritten = await self._rewriter.rewrite(query, history=history)
 
             expanded, intent = await asyncio.gather(
                 self._expander.expand(rewritten, count=self._expansion_count),

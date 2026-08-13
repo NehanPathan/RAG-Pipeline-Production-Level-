@@ -89,6 +89,7 @@ class DxfLoader(DocumentLoader):
         for sheet in cad.layouts:
             page = sheet.index + 1
             text_blocks.extend(self._title_block_for(cad, sheet.index, page))
+            text_blocks.extend(self._layer_inventory_for(cad, page))
             text_blocks.extend(self._layer_blocks_for(cad, sheet.index, page))
 
             schedule = self._dimension_schedule(cad, sheet.index, page)
@@ -151,6 +152,54 @@ class DxfLoader(DocumentLoader):
             )
         ]
 
+    def _layer_inventory_for(self, cad: CadDocument, page: int) -> list[TextBlock]:
+        """What is drawn on each layer, as one retrievable block.
+
+        A structural drawing's layers *are* its semantics: S-BOLTS, S-DIMS,
+        S-SECT_STEEL say what the sheet is made of. But a layer is only
+        visible downstream if it carries text, and on the reference drawing
+        the bolts layer holds 26 lines, 16 polylines and 13 block references
+        with no text at all. "What layers are present?" was therefore
+        unanswerable from a drawing that plainly had them -- the pipeline
+        refused as ungrounded, correctly, because nothing had ever written
+        the evidence down.
+
+        Emitted once per sheet, not per entity: one chunk that inventories
+        the drawing, rather than thousands of meaningless primitives.
+        """
+        if not cad.entities_per_layer:
+            return []
+
+        lines = [
+            f"{layer}: "
+            + ", ".join(
+                f"{count} {kind}"
+                for kind, count in sorted(
+                    cad.entities_per_layer[layer].items(), key=lambda kv: -kv[1]
+                )
+            )
+            for layer in cad.populated_layers
+        ]
+        body = (
+            f"Layers present in this drawing ({len(cad.populated_layers)}), "
+            "with the entities drawn on each:\n" + "\n".join(lines)
+        )
+        return [
+            TextBlock(
+                text="Layers",
+                page_number=page,
+                element_label=LABEL_LAYER_HEADING,
+                heading_level=2,
+                section="LAYERS",
+            ),
+            TextBlock(
+                text=body,
+                page_number=page,
+                element_label=LABEL_TEXT,
+                section="LAYERS",
+            ),
+        ]
+
     def _layer_blocks_for(self, cad: CadDocument, layout_index: int, page: int) -> list[TextBlock]:
         """One block per layer, layer name as the heading.
 
@@ -180,7 +229,12 @@ class DxfLoader(DocumentLoader):
             )
             blocks.append(
                 TextBlock(
-                    text=body,
+                    # Named inline as well as in `section`, because the chunk
+                    # is retrieved on its text: a fragment reading `3"` twice
+                    # and `1 1/2"` is unusable, while "Layer S-TEXT" in front
+                    # of it says what the numbers belong to -- and makes the
+                    # layer itself matchable by keyword search.
+                    text=f"Layer {layer}:\n{body}",
                     page_number=page,
                     element_label=LABEL_TEXT,
                     section=layer,
@@ -233,9 +287,7 @@ class DxfLoader(DocumentLoader):
         return _grid_to_table(rows, page, caption=f"Block schedule (sheet {page})")
 
 
-def _grid_to_table(
-    grid: list[list[str]], page_number: int, caption: str = ""
-) -> TableBlock | None:
+def _grid_to_table(grid: list[list[str]], page_number: int, caption: str = "") -> TableBlock | None:
     """Render a cell grid as markdown, keeping the grid itself.
 
     The grid is preserved rather than only the markdown so a later step can
