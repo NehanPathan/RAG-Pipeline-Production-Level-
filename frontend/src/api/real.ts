@@ -6,7 +6,7 @@
  * rather than inventing data. The pages catch it and render a "not wired up
  * yet" state, which is honest and points at the endpoint that has to exist.
  */
-import { ApiError, API_BASE, authHeaders, request, streamSSE } from "@/api/client"
+import { ApiError, API_BASE, freshAuthHeaders, request, streamSSE } from "@/api/client"
 import type { ApiSurface } from "@/api/surface"
 import type * as T from "@/api/types"
 
@@ -76,31 +76,40 @@ export const realApi: ApiSurface = {
     // XHR rather than fetch: only XHR reports upload progress, and a drawing
     // set is large enough that a progress bar is the difference between
     // "working" and "hung".
-    return new Promise<T.UploadResponse>((resolve, reject) => {
-      const xhr = new XMLHttpRequest()
-      xhr.open("POST", `${API_BASE}/documents`)
-      for (const [key, value] of Object.entries(authHeaders())) {
-        xhr.setRequestHeader(key, value)
-      }
-      xhr.upload.onprogress = (event) => {
-        if (event.lengthComputable) onProgress?.(event.loaded / event.total)
-      }
-      xhr.onload = () => {
-        if (xhr.status >= 200 && xhr.status < 300) {
-          resolve(JSON.parse(xhr.responseText) as T.UploadResponse)
-        } else {
-          let detail = xhr.statusText
-          try {
-            detail = JSON.parse(xhr.responseText).detail ?? detail
-          } catch {
-            /* keep the status text */
+    return freshAuthHeaders().then(
+      (headers) =>
+        new Promise<T.UploadResponse>((resolve, reject) => {
+          const xhr = new XMLHttpRequest()
+          xhr.open("POST", `${API_BASE}/documents`)
+          for (const [key, value] of Object.entries(headers)) {
+            xhr.setRequestHeader(key, value)
           }
-          reject(new ApiError(xhr.status, detail, xhr.getResponseHeader("X-Trace-Id") ?? undefined))
-        }
-      }
-      xhr.onerror = () => reject(new ApiError(0, "Network error during upload."))
-      xhr.send(form)
-    })
+          xhr.upload.onprogress = (event) => {
+            if (event.lengthComputable) onProgress?.(event.loaded / event.total)
+          }
+          xhr.onload = () => {
+            if (xhr.status >= 200 && xhr.status < 300) {
+              resolve(JSON.parse(xhr.responseText) as T.UploadResponse)
+            } else {
+              let detail = xhr.statusText
+              try {
+                detail = JSON.parse(xhr.responseText).detail ?? detail
+              } catch {
+                /* keep the status text */
+              }
+              reject(
+                new ApiError(
+                  xhr.status,
+                  detail,
+                  xhr.getResponseHeader("X-Trace-Id") ?? undefined,
+                ),
+              )
+            }
+          }
+          xhr.onerror = () => reject(new ApiError(0, "Network error during upload."))
+          xhr.send(form)
+        }),
+    )
   },
 
   reclassifyDocument(id, sensitivity, reason) {

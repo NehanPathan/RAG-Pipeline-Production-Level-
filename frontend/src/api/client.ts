@@ -65,6 +65,39 @@ export function authHeaders(): Record<string, string> {
   return {}
 }
 
+/**
+ * Renews the bearer token when it is close to expiry.
+ *
+ * Installed by the auth provider, which owns the refresh token. Kept here
+ * rather than there because *every* request needs it, and a token that
+ * expires while a tab is open is otherwise only noticed at the point of
+ * failure -- "Could not reach the answering service. Token has expired."
+ * after an hour of the page looking perfectly signed in.
+ *
+ * Refreshing on mount alone was not enough: it fixes a reload, not a session
+ * left open. Doing it per request is a no-op in the common case, because the
+ * provider returns immediately when the token is still good.
+ */
+type TokenRefresher = () => Promise<string | null>
+
+let refreshToken: TokenRefresher | null = null
+
+export function setTokenRefresher(next: TokenRefresher | null) {
+  refreshToken = next
+}
+
+/** Auth headers, renewing the token first if it is about to expire. */
+export async function freshAuthHeaders(): Promise<Record<string, string>> {
+  if (credentials.mode === "bearer" && refreshToken) {
+    // A failed refresh falls through to the existing token: the request then
+    // fails with a real 401 from the API, which is a better signal than a
+    // client-side error that hides whether the server was ever asked.
+    const token = await refreshToken().catch(() => null)
+    if (token) return { Authorization: `Bearer ${token}` }
+  }
+  return authHeaders()
+}
+
 async function parseError(response: Response): Promise<ApiError> {
   const traceId = response.headers.get("X-Trace-Id") ?? undefined
   let detail = response.statusText || `Request failed (${response.status})`
@@ -114,7 +147,7 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
     headers: {
       ...(raw ? {} : body !== undefined ? { "Content-Type": "application/json" } : {}),
       Accept: "application/json",
-      ...authHeaders(),
+      ...(await freshAuthHeaders()),
       ...headers,
     },
     body: raw ? (body as BodyInit) : body !== undefined ? JSON.stringify(body) : undefined,
@@ -148,7 +181,7 @@ export async function* streamSSE<T>(
     headers: {
       "Content-Type": "application/json",
       Accept: "text/event-stream",
-      ...authHeaders(),
+      ...(await freshAuthHeaders()),
     },
     body: JSON.stringify(body),
     signal,

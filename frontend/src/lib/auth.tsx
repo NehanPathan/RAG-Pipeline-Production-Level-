@@ -1,6 +1,6 @@
 import * as React from "react"
 import { api, USE_MOCKS } from "@/api"
-import { setCredentials } from "@/api/client"
+import { setCredentials, setTokenRefresher } from "@/api/client"
 import { setMockPrincipal } from "@/api/mock/handlers"
 import { USERS } from "@/api/mock/corpus"
 import type { Principal, Role, Sensitivity } from "@/api/types"
@@ -141,28 +141,47 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signOut = React.useCallback(() => persist(null), [persist])
 
-  // Firebase ID tokens last an hour. A restored session whose token has
-  // expired would otherwise keep sending it: the API rejects it with 401 and
-  // the UI shows "signed in" over a wall of failed requests. Refreshing on
-  // mount turns that into either a working session or a clean sign-out.
+  // Firebase ID tokens last an hour, and the API client asks for a fresh one
+  // before every request. Refreshing on mount alone was not enough: it fixed
+  // a reload but not a tab left open, where the token died mid-session and
+  // the next question came back "Could not reach the answering service.
+  // Token has expired" over a page that still looked signed in.
+  //
+  // In-flight refreshes are shared. Several requests firing at once past
+  // expiry would otherwise each spend a refresh token, and Firebase rotates
+  // it -- the losers would exchange a token that had already been replaced.
+  const inFlight = React.useRef<Promise<string | null> | null>(null)
+
   React.useEffect(() => {
-    if (USE_MOCKS || !session?.firebase || !isExpired(session.firebase)) return
-    let cancelled = false
-    void (async () => {
-      try {
-        const firebase = await refreshSession(session.firebase!.refreshToken)
-        if (cancelled) return
-        persist({ ...session, token: firebase.idToken, firebase })
-      } catch {
-        // The refresh token is revoked or expired: the session is genuinely
-        // over, and saying so is better than failing every request quietly.
-        if (!cancelled) persist(null)
-      }
-    })()
-    return () => {
-      cancelled = true
+    if (USE_MOCKS || !session?.firebase) {
+      setTokenRefresher(null)
+      return
     }
-    // Runs on mount and whenever a new session is stored.
+
+    setTokenRefresher(async () => {
+      const current = session.firebase!
+      if (!isExpired(current)) return current.idToken
+      if (inFlight.current) return inFlight.current
+
+      inFlight.current = (async () => {
+        try {
+          const firebase = await refreshSession(current.refreshToken)
+          persist({ ...session, token: firebase.idToken, firebase })
+          return firebase.idToken
+        } catch {
+          // The refresh token is revoked or expired: the session is genuinely
+          // over. Signing out says so, rather than failing every request
+          // quietly behind a UI that claims otherwise.
+          persist(null)
+          return null
+        } finally {
+          inFlight.current = null
+        }
+      })()
+      return inFlight.current
+    })
+
+    return () => setTokenRefresher(null)
   }, [session, persist])
 
   const value = React.useMemo<AuthContextValue>(
