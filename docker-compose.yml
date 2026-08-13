@@ -160,6 +160,14 @@ services:
 
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.16.1
+    # Without a fixed hostname the container is only known by its generated
+    # id, and log4j calls InetAddress.getLocalHost() before logging is even
+    # configured. When Docker's DNS cannot resolve that id -- which happens
+    # on Docker Desktop/WSL2 -- Elasticsearch dies during startup with
+    # "status logger logged an error before logging was configured", which
+    # names neither the real cause nor the container. A stable name is
+    # always resolvable.
+    hostname: elasticsearch
     environment:
       - discovery.type=single-node
       - xpack.security.enabled=false
