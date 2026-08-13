@@ -41,6 +41,47 @@ from src.monitoring.tracing import configure_tracing, instrument_fastapi
 logger = get_logger(__name__)
 
 
+def _warn_on_unreachable_loaders(pipeline, settings) -> None:
+    """Say so when a loader exists that no upload can ever reach.
+
+    `ALLOWED_FILE_TYPES` gates uploads before loader selection, so a type the
+    pipeline can handle but the setting omits is rejected at the door with a
+    422 that blames the file. That is a config drift with no symptom until
+    someone tries -- and it happened twice with DXF, because `.env` is not
+    version-controlled and drifted from `.env.example` unnoticed.
+
+    A warning rather than a failure: an operator may deliberately narrow what
+    a deployment accepts, and refusing to boot over that would be wrong.
+    """
+    allowed = {t.lower() for t in settings.allowed_file_types_list}
+    unreachable = sorted(
+        extension
+        for extension in (
+            "pdf",
+            "docx",
+            "txt",
+            "md",
+            "html",
+            "png",
+            "jpg",
+            "jpeg",
+            "tiff",
+            "bmp",
+            "dxf",
+            "dwg",
+        )
+        if extension not in allowed
+        and any(loader.supports("", f".{extension}") for loader in pipeline._loaders)
+    )
+    if unreachable:
+        logger.warning(
+            "loaders_unreachable_by_config",
+            types=unreachable,
+            hint="ALLOWED_FILE_TYPES omits these; uploads will 422 despite a loader existing",
+            allowed=sorted(allowed),
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
@@ -70,9 +111,9 @@ async def lifespan(app: FastAPI):
     # GOVERN: load and publish the policy in force, so `rag_policy_info`
     # tells a dashboard which rules were active during any time window.
     policy = get_policy()
-    policy_info.labels(
-        version=policy.version, enforcement_mode=policy.enforcement_mode.value
-    ).set(1)
+    policy_info.labels(version=policy.version, enforcement_mode=policy.enforcement_mode.value).set(
+        1
+    )
     logger.info("governance_policy_active", **policy.as_dict())
 
     # Create tables on startup in dev mode
@@ -130,8 +171,9 @@ async def lifespan(app: FastAPI):
         # just that upload) for as long as the model took to download. Found
         # during Phase 4A end-to-end verification. Run via `to_thread` so
         # even this blocking call doesn't tie up the startup event loop.
-        await asyncio.to_thread(get_ingestion_pipeline)
+        pipeline = await asyncio.to_thread(get_ingestion_pipeline)
         logger.info("ingestion_pipeline_warmed")
+        _warn_on_unreachable_loaders(pipeline, settings)
 
     # MANAGE: prime the kill-switch cache and publish it to Prometheus, so
     # `rag_kill_switch_state` reads 1 from the first scrape rather than being

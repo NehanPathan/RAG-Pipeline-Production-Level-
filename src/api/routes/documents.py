@@ -16,6 +16,7 @@ from src.api.dependencies import (
     get_job_repository,
     get_project_repository,
     get_query_pipeline,
+    get_register_revision,
     get_search_repository,
     get_vector_repository,
 )
@@ -140,6 +141,13 @@ async def upload_document(
     domain: str = Form(default=""),
     tags: str = Form(default=""),
     sensitivity: str = Form(default=""),
+    project_id: str = Form(default=""),
+    # The drawing this file is a revision of. Supplied by the uploader, who
+    # is reading the title block, and therefore authoritative over the
+    # extractor's guess -- see `_register_drawing_revision`, which stands
+    # down when these are given.
+    drawing_number: str = Form(default=""),
+    revision_label: str = Form(default=""),
     principal: Principal = Depends(
         rate_limit_role("upload", Role.ANALYST, Role.STEWARD, Role.ADMIN)
     ),
@@ -233,8 +241,52 @@ async def upload_document(
     if tags:
         document.metadata.tags = [t.strip() for t in tags.split(",") if t.strip()]
 
+    # Project scope, before the save: `project_id` is what makes the document
+    # reachable by the uploader's colleagues, and a document saved without it
+    # is personal until someone notices.
+    if project_id:
+        try:
+            requested = uuid.UUID(project_id)
+        except ValueError:
+            raise HTTPException(
+                status_code=http_status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="project_id is not a valid UUID.",
+            ) from None
+        # Membership is checked rather than trusted: otherwise upload is a way
+        # to place a document into a project the uploader cannot read.
+        if (
+            principal.user_id is None
+            or requested not in await get_project_repository().member_project_ids(principal.user_id)
+        ):
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND, detail="Project not found"
+            ) from None
+        document.project_id = requested
+
     document_repo = get_document_repository()
     await document_repo.save(document)
+
+    # Register the revision now, when the uploader's own reading of the title
+    # block is available. Doing it here rather than during ingestion means an
+    # explicit drawing number is never overruled by what the extractor found,
+    # and that a superseded sheet stops being current the moment the new one
+    # is accepted rather than minutes later when parsing finishes.
+    if drawing_number:
+        try:
+            await get_register_revision().execute(
+                document,
+                drawing_number=drawing_number.strip(),
+                revision_label=(revision_label or "").strip() or "-",
+            )
+            await document_repo.update(document)
+        except Exception as exc:
+            # A register that refuses the upload is worse than a gap in it.
+            logger.warning(
+                "explicit_revision_registration_failed",
+                document_id=str(document.id),
+                drawing_number=drawing_number,
+                error=str(exc),
+            )
 
     logger.info(
         "document_upload_received",

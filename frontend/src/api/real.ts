@@ -50,12 +50,28 @@ export const realApi: ApiSurface = {
     return request<T.Job[]>(`/documents/${id}/jobs`)
   },
 
-  uploadDocument({ file, domain, tags, sensitivity, onProgress }) {
+  uploadDocument({
+    file,
+    domain,
+    tags,
+    sensitivity,
+    project_id,
+    drawing_number,
+    revision_label,
+    onProgress,
+  }) {
     const form = new FormData()
     form.append("file", file)
     if (domain) form.append("domain", domain)
     if (tags) form.append("tags", tags)
     if (sensitivity) form.append("sensitivity", sensitivity)
+    // The ingest form tells the user these decide which drawing the file
+    // becomes a revision of. They were collected and then dropped here, so
+    // a corrected drawing number was silently replaced by whatever the
+    // extractor guessed from the sheet.
+    if (project_id) form.append("project_id", project_id)
+    if (drawing_number) form.append("drawing_number", drawing_number)
+    if (revision_label) form.append("revision_label", revision_label)
 
     // XHR rather than fetch: only XHR reports upload progress, and a drawing
     // set is large enough that a progress bar is the difference between

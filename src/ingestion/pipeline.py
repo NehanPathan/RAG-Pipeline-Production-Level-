@@ -8,6 +8,7 @@ from typing import Protocol
 from src.application.use_cases.register_revision import RegisterRevision
 from src.domain.entities.document import Document, DocumentChunk, DocumentStatus
 from src.domain.repositories.document_repository import ChunkRepository, DocumentRepository
+from src.domain.repositories.project_repository import DrawingRepository
 from src.domain.repositories.search_repository import SearchRepository
 from src.domain.repositories.vector_repository import VectorRepository
 from src.ingestion.chunkers.chunking_strategy import ChunkingStrategy
@@ -71,6 +72,7 @@ class IngestionPipeline:
         search_repo: SearchRepository,
         intelligence_recorder: IntelligenceRecorder | None = None,
         register_revision: RegisterRevision | None = None,
+        drawing_repo: DrawingRepository | None = None,
     ) -> None:
         self._loaders = loaders
         self._enricher = enricher
@@ -85,6 +87,10 @@ class IngestionPipeline:
         # Optional so the pipeline still runs without a drawing register --
         # a plain document corpus has no revisions to track.
         self._register_revision = register_revision
+        # Only read when a document arrives already registered -- the
+        # uploader named its drawing, so the number is looked up rather
+        # than derived.
+        self._drawing_repo = drawing_repo
 
     async def ingest(self, document: Document, file_path: Path) -> IngestionResult:
         logger.info("ingestion_start", document_id=str(document.id), file=document.file_name)
@@ -150,7 +156,9 @@ class IngestionPipeline:
 
             # Step 4: Generate embeddings in batch (retrieval-role provider)
             retrieval_provider = self._embedding_strategy.retrieval_provider
-            child_chunks = [c for c in chunks if c.chunk_type.value in ("child", "table", "standalone")]
+            child_chunks = [
+                c for c in chunks if c.chunk_type.value in ("child", "table", "standalone")
+            ]
             texts = [c.content for c in child_chunks]
             embeddings = await retrieval_provider.embed_texts(texts)
             for chunk, embedding in zip(child_chunks, embeddings, strict=False):
@@ -158,9 +166,7 @@ class IngestionPipeline:
                 chunk.embedding_model = retrieval_provider.model_id
 
             # Step 5: Ensure collection exists
-            await self._vector_repo.create_collection_if_not_exists(
-                retrieval_provider.dimensions
-            )
+            await self._vector_repo.create_collection_if_not_exists(retrieval_provider.dimensions)
             await self._search_repo.create_index_if_not_exists()
 
             # Step 6: Store chunks in Postgres
@@ -204,7 +210,9 @@ class IngestionPipeline:
 
         except Exception as e:
             error_msg = str(e)
-            logger.error("ingestion_failed", document_id=str(document.id), error=error_msg, exc_info=True)
+            logger.error(
+                "ingestion_failed", document_id=str(document.id), error=error_msg, exc_info=True
+            )
             document.mark_failed(error_msg)
             await self._document_repo.update(document)
             return IngestionResult(
@@ -226,6 +234,13 @@ class IngestionPipeline:
         """
         if self._register_revision is None:
             return None
+
+        if document.drawing_id is not None and self._drawing_repo is not None:
+            # Already registered at upload, from the uploader's own reading of
+            # the title block. Their answer beats the extractor's guess, and
+            # re-registering would supersede the sheet with itself.
+            drawing = await self._drawing_repo.get_by_id(document.drawing_id)
+            return drawing.drawing_number if drawing else None
 
         stored = (document.metadata.custom_metadata or {}).get(CUSTOM_METADATA_KEY)
         identity = DrawingIdentity.from_dict(stored)
