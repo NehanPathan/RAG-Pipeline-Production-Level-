@@ -26,7 +26,7 @@ from __future__ import annotations
 from alembic import op
 
 revision = "0001_phase4a"
-down_revision = None
+down_revision = "0000_baseline"
 branch_labels = None
 depends_on = None
 

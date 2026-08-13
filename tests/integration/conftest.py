@@ -86,10 +86,26 @@ def qdrant_url() -> Iterator[str]:
 
 @pytest.fixture(scope="session")
 def elasticsearch_url() -> Iterator[str]:
-    from testcontainers.elasticsearch import ElasticSearchContainer
+    from testcontainers.core.container import DockerContainer
+    from testcontainers.core.waiting_utils import wait_for_logs
 
-    with ElasticSearchContainer("elasticsearch:8.16.1") as container:
-        yield container.get_url()
+    # A generic container rather than `ElasticSearchContainer`: that helper
+    # is deprecated in testcontainers 4.x and no longer exposes `get_url`,
+    # and it does not disable security, which the application's client is not
+    # configured for.
+    container = (
+        DockerContainer("elasticsearch:8.16.1")
+        .with_exposed_ports(9200)
+        .with_env("discovery.type", "single-node")
+        .with_env("xpack.security.enabled", "false")
+        # The default heap assumes more memory than a CI runner gives it.
+        .with_env("ES_JAVA_OPTS", "-Xms512m -Xmx512m")
+    )
+    with container:
+        wait_for_logs(container, "started", timeout=180)
+        host = container.get_container_host_ip()
+        port = container.get_exposed_port(9200)
+        yield f"http://{host}:{port}"
 
 
 @pytest.fixture
@@ -101,14 +117,19 @@ async def migrated_db(postgres_url: str):
     directly in development, which means a migration can drift from the
     models and nothing notices until a production deploy.
     """
+    import asyncio
+
     from alembic import command
     from alembic.config import Config
 
     config = Config("alembic.ini")
-    config.set_main_option(
-        "sqlalchemy.url", postgres_url.replace("postgresql+asyncpg", "postgresql+psycopg2")
-    )
-    command.upgrade(config, "head")
+    # env.py builds an async engine from this, so it wants the asyncpg URL.
+    config.set_main_option("sqlalchemy.url", postgres_url)
+
+    # Run in a worker thread. `env.py` calls `asyncio.run()` internally, which
+    # refuses to nest inside pytest-asyncio's already-running loop; a thread
+    # has no loop of its own, so `asyncio.run()` is legal there.
+    await asyncio.to_thread(command.upgrade, config, "head")
     yield postgres_url
 
 

@@ -33,10 +33,31 @@ def do_run_migrations(connection):
         context.run_migrations()
 
 
-async def run_async_migrations() -> None:
+def _database_url() -> str:
+    """The database to migrate.
+
+    The Alembic config wins when it carries a URL, and `.env` is the
+    fallback. Previously this read `settings.database_url` unconditionally,
+    which meant `sqlalchemy.url` was silently ignored: `alembic -x`, a
+    `-c` override and a programmatic `set_main_option` all had no effect,
+    and every migration ran against whatever `.env` happened to say.
+
+    That made it impossible to migrate staging and production from one
+    checkout -- and, more quietly, it meant a test that thought it was
+    migrating a throwaway container was really migrating the developer's own
+    database.
+    """
+    configured = config.get_main_option("sqlalchemy.url", None)
+    if configured:
+        return configured
+
     from src.config import get_settings
-    settings = get_settings()
-    connectable = create_async_engine(settings.database_url, poolclass=pool.NullPool)
+
+    return get_settings().database_url
+
+
+async def run_async_migrations() -> None:
+    connectable = create_async_engine(_database_url(), poolclass=pool.NullPool)
     async with connectable.connect() as connection:
         await connection.run_sync(do_run_migrations)
     await connectable.dispose()

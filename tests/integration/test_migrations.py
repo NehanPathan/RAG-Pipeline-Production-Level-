@@ -90,9 +90,11 @@ class TestRevisionConstraint:
         user_id, drawing_id = uuid.uuid4(), uuid.uuid4()
         async with session_factory() as session:
             await session.execute(
+                # `email_verified` is NOT NULL with only a Python-side
+                # default, so raw SQL has to supply it.
                 text(
-                    "INSERT INTO users (id, email, role, is_active) "
-                    "VALUES (:id, :email, 'admin', true)"
+                    "INSERT INTO users (id, email, role, is_active, email_verified) "
+                    "VALUES (:id, :email, 'admin', true, false)"
                 ),
                 {"id": user_id, "email": f"{user_id}@test.local"},
             )
@@ -102,18 +104,24 @@ class TestRevisionConstraint:
                 ),
                 {"id": drawing_id},
             )
-            for _ in range(2):
+            insert = text(
+                "INSERT INTO documents "
+                "(id, user_id, file_name, file_type, file_size_bytes, status, "
+                " drawing_id, is_latest) "
+                "VALUES (:id, :user_id, 'S-104.pdf', 'pdf', 1, 'indexed', "
+                "        :drawing_id, true)"
+            )
+            await session.execute(
+                insert, {"id": uuid.uuid4(), "user_id": user_id, "drawing_id": drawing_id}
+            )
+
+            # The index rejects the write itself, not the commit -- which is
+            # the stronger guarantee: a second current revision is never even
+            # momentarily visible to a concurrent reader.
+            with pytest.raises(Exception) as exc:
                 await session.execute(
-                    text(
-                        "INSERT INTO documents "
-                        "(id, user_id, file_name, file_type, file_size_bytes, status, "
-                        " drawing_id, is_latest) "
-                        "VALUES (:id, :user_id, 'S-104.pdf', 'pdf', 1, 'indexed', "
-                        "        :drawing_id, true)"
-                    ),
+                    insert,
                     {"id": uuid.uuid4(), "user_id": user_id, "drawing_id": drawing_id},
                 )
-            with pytest.raises(Exception) as exc:
-                await session.commit()
 
         assert "uq_drawings_one_latest" in str(exc.value)
