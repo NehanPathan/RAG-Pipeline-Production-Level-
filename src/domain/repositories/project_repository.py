@@ -92,6 +92,16 @@ class DrawingRepository(ABC):
         ...
 
     @abstractmethod
+    async def list_personal_for_user(self, user_id: uuid.UUID) -> list[Drawing]:
+        """Drawings with no project, reached through their revisions' owner."""
+        ...
+
+    @abstractmethod
+    async def is_owned_by(self, drawing_id: uuid.UUID, user_id: uuid.UUID) -> bool:
+        """Whether any revision of this drawing belongs to the user."""
+        ...
+
+    @abstractmethod
     async def current_revision_id(self, drawing_id: uuid.UUID) -> uuid.UUID | None: ...
 
     @abstractmethod

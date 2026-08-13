@@ -86,6 +86,8 @@ class _FakeDrawingRepository:
         self.drawings: dict[uuid.UUID, Drawing] = {}
         self.revisions: dict[uuid.UUID, list[uuid.UUID]] = {}
         self.current: dict[uuid.UUID, uuid.UUID] = {}
+        # drawing id -> the user who owns its revisions.
+        self.owners: dict[uuid.UUID, uuid.UUID] = {}
 
     async def list_for_project(self, project_id):
         return [d for d in self.drawings.values() if d.project_id == project_id]
@@ -98,6 +100,16 @@ class _FakeDrawingRepository:
 
     async def revision_document_ids(self, drawing_id):
         return self.revisions.get(drawing_id, [])
+
+    async def list_personal_for_user(self, user_id):
+        return [
+            d
+            for d in self.drawings.values()
+            if d.project_id is None and self.owners.get(d.id) == user_id
+        ]
+
+    async def is_owned_by(self, drawing_id, user_id):
+        return self.owners.get(drawing_id) == user_id
 
     async def get_or_create(self, **kwargs):  # pragma: no cover - unused here
         raise NotImplementedError
@@ -499,3 +511,66 @@ class TestGlobalDrawingList:
         drawings.drawings[drawing.id] = drawing
 
         assert client.get(f"/api/v1/drawings/{drawing.id}").status_code == 404
+
+
+class TestPersonalDrawings:
+    """A drawing uploaded outside a project.
+
+    `project_id IS NULL` means personal, exactly as it does for documents.
+    Both halves were wrong: the register walked only projects, so such a
+    drawing was registered, indexed, searchable and absent from the one page
+    whose job is listing drawings -- and the access check skipped entirely,
+    so it was readable by every authenticated caller.
+    """
+
+    def test_my_own_project_less_drawing_appears_in_the_register(self, client, repositories):
+        _, drawings, _ = repositories
+        drawing = Drawing(drawing_number="SSD09.0-02", project_id=None)
+        drawings.drawings[drawing.id] = drawing
+        drawings.owners[drawing.id] = ME
+
+        body = client.get("/api/v1/drawings").json()
+
+        assert [d["drawing_number"] for d in body] == ["SSD09.0-02"]
+        assert body[0]["project_id"] is None
+
+    def test_someone_elses_project_less_drawing_does_not(self, client, repositories):
+        _, drawings, _ = repositories
+        drawing = Drawing(drawing_number="PRIVATE-1", project_id=None)
+        drawings.drawings[drawing.id] = drawing
+        drawings.owners[drawing.id] = SOMEONE_ELSE
+
+        assert client.get("/api/v1/drawings").json() == []
+
+    def test_a_project_less_drawing_is_not_readable_by_anyone(self, client, repositories):
+        """The leak: the membership check simply did not run for these."""
+        _, drawings, _ = repositories
+        drawing = Drawing(drawing_number="PRIVATE-1", project_id=None)
+        drawings.drawings[drawing.id] = drawing
+        drawings.owners[drawing.id] = SOMEONE_ELSE
+
+        assert client.get(f"/api/v1/drawings/{drawing.id}").status_code == 404
+        assert client.get(f"/api/v1/drawings/{drawing.id}/revisions").status_code == 404
+
+    def test_the_owner_can_read_their_own(self, client, repositories):
+        _, drawings, _ = repositories
+        drawing = Drawing(drawing_number="SSD09.0-02", project_id=None)
+        drawings.drawings[drawing.id] = drawing
+        drawings.owners[drawing.id] = ME
+
+        assert client.get(f"/api/v1/drawings/{drawing.id}").status_code == 200
+        assert client.get(f"/api/v1/drawings/{drawing.id}/revisions").status_code == 200
+
+    def test_narrowing_to_a_project_excludes_personal_drawings(self, client, repositories):
+        """Asking for one project's register should not fold in loose ones."""
+        _, drawings, _ = repositories
+        project = _existing_project(repositories)
+        personal = Drawing(drawing_number="SSD09.0-02", project_id=None)
+        drawings.drawings[personal.id] = personal
+        drawings.owners[personal.id] = ME
+        in_project = Drawing(drawing_number="S-104", project_id=project.id)
+        drawings.drawings[in_project.id] = in_project
+
+        body = client.get(f"/api/v1/drawings?project_id={project.id}").json()
+
+        assert [d["drawing_number"] for d in body] == ["S-104"]

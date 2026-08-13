@@ -333,6 +333,35 @@ async def list_project_drawings(
     ]
 
 
+async def _reachable_drawing(drawing_id: uuid.UUID, principal: Principal):
+    """Load a drawing the caller is entitled to, or 404.
+
+    Two cases, because a drawing is scoped the same way a document is:
+    project membership when it belongs to a project, ownership of one of its
+    revisions when it does not. The second was missing -- a drawing with
+    `project_id IS NULL` skipped the check entirely and was readable by every
+    authenticated caller.
+    """
+    drawings = get_drawing_repository()
+    drawing = await drawings.get_by_id(drawing_id)
+    if drawing is None:
+        raise HTTPException(status_code=http_status.HTTP_404_NOT_FOUND, detail="Drawing not found")
+
+    project_number = None
+    if drawing.project_id is not None:
+        await _membership(drawing.project_id, principal)
+        project = await get_project_repository().get_by_id(drawing.project_id)
+        project_number = project.project_number if project else None
+    elif not principal.is_admin:
+        if principal.user_id is None or not await drawings.is_owned_by(
+            drawing_id, principal.user_id
+        ):
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND, detail="Drawing not found"
+            )
+    return drawing, project_number
+
+
 @router.get("/drawings", response_model=list[DrawingResponse])
 async def list_drawings(
     project_id: uuid.UUID | None = None,
@@ -356,12 +385,25 @@ async def list_drawings(
         projects = [p for p in projects if p.id == project_id]
 
     needle = (search or "").strip().lower()
+
+    def matches(drawing) -> bool:
+        return not needle or needle in f"{drawing.drawing_number} {drawing.title or ''}".lower()
+
+    drawings = get_drawing_repository()
     results: list[DrawingResponse] = []
     for project in projects:
-        for drawing in await get_drawing_repository().list_for_project(project.id):
-            if needle and needle not in f"{drawing.drawing_number} {drawing.title or ''}".lower():
-                continue
-            results.append(await _drawing_response(drawing, project.project_number))
+        for drawing in await drawings.list_for_project(project.id):
+            if matches(drawing):
+                results.append(await _drawing_response(drawing, project.project_number))
+
+    # Drawings uploaded outside a project. `project_id IS NULL` means
+    # personal, exactly as for documents -- omitting them left a drawing
+    # registered, indexed and searchable but absent from the one page whose
+    # job is listing drawings.
+    if project_id is None:
+        for drawing in await drawings.list_personal_for_user(principal.user_id):
+            if matches(drawing):
+                results.append(await _drawing_response(drawing, None))
     return results
 
 
@@ -370,15 +412,7 @@ async def get_drawing(
     drawing_id: uuid.UUID,
     principal: Principal = Depends(rate_limit("default")),
 ) -> DrawingResponse:
-    drawing = await get_drawing_repository().get_by_id(drawing_id)
-    if drawing is None:
-        raise HTTPException(status_code=http_status.HTTP_404_NOT_FOUND, detail="Drawing not found")
-
-    project_number = None
-    if drawing.project_id is not None:
-        await _membership(drawing.project_id, principal)
-        project = await get_project_repository().get_by_id(drawing.project_id)
-        project_number = project.project_number if project else None
+    drawing, project_number = await _reachable_drawing(drawing_id, principal)
     return await _drawing_response(drawing, project_number)
 
 
@@ -394,11 +428,7 @@ async def list_revisions(
     already in -- and ordering by arrival would present the register in an
     order that is wrong precisely when it matters.
     """
-    drawing = await get_drawing_repository().get_by_id(drawing_id)
-    if drawing is None:
-        raise HTTPException(status_code=http_status.HTTP_404_NOT_FOUND, detail="Drawing not found")
-    if drawing.project_id is not None:
-        await _membership(drawing.project_id, principal)
+    await _reachable_drawing(drawing_id, principal)
 
     documents = []
     for document_id in await get_drawing_repository().revision_document_ids(drawing_id):

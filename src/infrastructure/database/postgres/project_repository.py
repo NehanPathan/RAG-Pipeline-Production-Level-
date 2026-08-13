@@ -221,6 +221,39 @@ class PostgresDrawingRepository(DrawingRepository):
             )
             return [_to_drawing(model) for model in result.scalars().all()]
 
+    async def list_personal_for_user(self, user_id: uuid.UUID) -> list[Drawing]:
+        """Drawings with no project, reached through their revisions' owner.
+
+        `project_id IS NULL` means personal, exactly as it does for
+        documents. Without this a drawing uploaded outside a project is
+        registered correctly and then invisible in the register -- indexed,
+        searchable, and absent from the one page built to list drawings.
+        """
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(DrawingModel)
+                .join(DocumentModel, DocumentModel.drawing_id == DrawingModel.id)
+                .where(DrawingModel.project_id.is_(None), DocumentModel.user_id == user_id)
+                .distinct()
+                .order_by(DrawingModel.drawing_number, DrawingModel.sheet_number)
+            )
+            return [_to_drawing(model) for model in result.scalars().all()]
+
+    async def is_owned_by(self, drawing_id: uuid.UUID, user_id: uuid.UUID) -> bool:
+        """Whether any revision of this drawing belongs to the user.
+
+        The reach test for a drawing that belongs to no project. Without it,
+        such a drawing was readable by every authenticated caller -- the
+        membership check simply did not run.
+        """
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(DocumentModel.id)
+                .where(DocumentModel.drawing_id == drawing_id, DocumentModel.user_id == user_id)
+                .limit(1)
+            )
+            return result.scalar_one_or_none() is not None
+
     async def current_revision_id(self, drawing_id: uuid.UUID) -> uuid.UUID | None:
         async with self._session_factory() as session:
             result = await session.execute(
