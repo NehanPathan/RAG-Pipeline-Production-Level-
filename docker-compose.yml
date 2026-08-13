@@ -58,6 +58,44 @@ services:
   # practice that cannot let drawings leave its network run this unchanged.
   #
   # AGPL-3.0: run as a container, never linked as a library.
+  # Ingestion worker. A separate process from the API on purpose: parsing a
+  # drawing set is minutes of CPU-bound work (CAD, OCR, layout inference,
+  # embedding), and running it inside the API meant one upload could starve
+  # every other request on a single-worker uvicorn -- and an API deploy
+  # mid-run silently abandoned the document.
+  worker:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    command: ["arq", "src.jobs.worker.WorkerSettings"]
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://raguser:ragpass@postgres:5432/ragdb
+      - REDIS_URL=redis://redis:6379/0
+      - QDRANT_URL=http://qdrant:6333
+      - ELASTICSEARCH_URL=http://elasticsearch:9200
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_SERVICE_NAME=prod-rag-worker
+      - JOB_BACKEND=arq
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      elasticsearch:
+        condition: service_healthy
+    volumes:
+      - ./src:/app/src
+      # The worker reads originals from the same store the API wrote them to.
+      - uploads_data:/app/uploads
+      - ./config:/app/config:ro
+      # Shares the model cache with the API: both load the same embedding and
+      # reranking models, and downloading them twice serves no purpose.
+      - model_cache:/home/raguser/.cache
+    restart: unless-stopped
+
   minio:
     image: minio/minio:RELEASE.2024-10-13T13-34-11Z
     command: server /data --console-address ":9001"

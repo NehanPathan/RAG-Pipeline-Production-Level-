@@ -276,6 +276,43 @@ retention_purged = Counter(
 )
 
 
+# Job queue. Ingestion used to run in-process with no record of what
+# happened; these are what make a stuck or failing queue visible before a
+# user reports a document that never finished.
+jobs_enqueued = Counter(
+    "rag_jobs_enqueued_total",
+    "Jobs placed on the queue",
+    ["job_type", "backend"],
+    registry=registry,
+)
+
+jobs_processed = Counter(
+    "rag_jobs_processed_total",
+    "Jobs finished, by outcome",
+    # `retrying` is deliberately distinct from `failed`: a job that will be
+    # retried is not yet a problem, and alerting on it would train operators
+    # to ignore the alert.
+    ["job_type", "outcome"],
+    registry=registry,
+)
+
+job_duration = Histogram(
+    "rag_job_duration_seconds",
+    "Wall-clock time per job",
+    ["job_type"],
+    # CAD and OCR work runs for minutes, so the default buckets (which top
+    # out at 10s) would put every real ingestion in +Inf.
+    buckets=(1, 5, 15, 30, 60, 120, 300, 600, 1800),
+    registry=registry,
+)
+
+documents_stuck = Gauge(
+    "rag_documents_stuck",
+    "Documents left in `processing` with no live job",
+    registry=registry,
+)
+
+
 def metric_names() -> set[str]:
     """Every metric name currently registered, in both the family form
     (`rag_x`) and the exported counter form (`rag_x_total`).

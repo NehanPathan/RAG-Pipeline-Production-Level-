@@ -16,11 +16,13 @@ from src.infrastructure.database.postgres.document_intelligence_repository impor
     PostgresDocumentIntelligenceRepository,
 )
 from src.infrastructure.database.postgres.document_repository import PostgresDocumentRepository
+from src.infrastructure.database.postgres.job_repository import PostgresJobRepository
 from src.infrastructure.database.redis.connection import RedisCache, get_redis_client
 from src.infrastructure.search.elasticsearch.repository import (
     ElasticsearchSearchRepository,
     create_elasticsearch_client,
 )
+from src.infrastructure.storage import get_blob_store
 from src.infrastructure.vector_store.qdrant.cache_repository import QdrantSemanticCacheRepository
 from src.infrastructure.vector_store.qdrant.repository import (
     QdrantVectorRepository,
@@ -51,6 +53,9 @@ from src.ingestion.ocr.registry import get_ocr_provider
 from src.ingestion.parsing.intelligence_recorder import DocumentIntelligenceRecorder
 from src.ingestion.parsing.parsing_orchestrator import DocumentParsingService
 from src.ingestion.pipeline import IngestionPipeline
+from src.jobs.models import JobType
+from src.jobs.queue import ArqJobQueue, InlineJobQueue, JobQueue
+from src.jobs.runner import JobRunner
 from src.llm.registry import get_llm_provider
 from src.retrieval.agents.filter_generator import FilterGenerator
 from src.retrieval.agents.intent_classifier import IntentClassifier
@@ -170,6 +175,75 @@ async def ensure_search_schema() -> None:
     """
     await _get_vector_repo().ensure_payload_indexes()
     await _get_search_repo().ensure_mapping()
+
+
+
+_job_repo: PostgresJobRepository | None = None
+_job_runner: JobRunner | None = None
+_job_queue: JobQueue | None = None
+
+
+def get_job_repository() -> PostgresJobRepository:
+    global _job_repo
+    if _job_repo is None:
+        _job_repo = PostgresJobRepository(get_session_factory())
+    return _job_repo
+
+
+def get_job_runner() -> JobRunner:
+    """The one place a job is executed, whichever backend dispatched it.
+
+    Shared between the arq worker and the inline backend so retry
+    accounting, status transitions and the idempotency rule cannot drift
+    between production and development.
+    """
+    global _job_runner
+    if _job_runner is None:
+        settings = get_settings()
+        _job_runner = JobRunner(
+            job_repo=get_job_repository(),
+            document_repo=get_document_repository(),
+            ingestion_pipeline_factory=get_ingestion_pipeline,
+            chunk_repo=get_chunk_repository(),
+            vector_repo=_get_vector_repo(),
+            search_repo=_get_search_repo(),
+            blob_store=get_blob_store(settings),
+        )
+    return _job_runner
+
+
+def get_job_queue() -> JobQueue:
+    global _job_queue
+    if _job_queue is None:
+        settings = get_settings()
+        if settings.job_backend.strip().lower() == "arq":
+            from arq.connections import RedisSettings
+
+            _job_queue = ArqJobQueue(
+                redis_settings=RedisSettings.from_dsn(settings.redis_url),
+                job_repo=get_job_repository(),
+                max_attempts=settings.job_max_attempts,
+            )
+        else:
+            _job_queue = InlineJobQueue(
+                job_repo=get_job_repository(),
+                runner=get_job_runner().run,
+            )
+    return _job_queue
+
+
+async def enqueue_ingestion(document_id, file_path=None, job_type=JobType.INGEST_DOCUMENT):
+    """Queue ingestion for a document.
+
+    `file_path` is a hint, not a requirement: the API has a local working
+    copy from the upload, but the worker is a different process and falls
+    back to reading the blob when the path is absent.
+    """
+    return await get_job_queue().enqueue(
+        job_type,
+        document_id=document_id,
+        file_path=str(file_path) if file_path else None,
+    )
 
 
 _query_pipeline: QueryPipeline | None = None

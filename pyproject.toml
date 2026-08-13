@@ -22,6 +22,12 @@ dependencies = [
     # Cache
     "redis[hiredis]>=5.2.0",
 
+    # Job queue. arq is async-native and rides the Redis already running
+    # here -- no second broker, no separate result backend. Celery is
+    # prefork/thread-oriented and RQ is sync-only; both would mean running
+    # blocking workers beside an entirely async codebase.
+    "arq>=0.26",
+
     # Vector Store
     "qdrant-client>=1.12.0,<1.13.0",
 

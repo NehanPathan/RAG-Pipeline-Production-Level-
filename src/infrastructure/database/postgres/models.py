@@ -61,6 +61,44 @@ class APIKeyModel(Base):
 
 
 
+
+class JobModel(Base):
+    """A unit of background work and what became of it.
+
+    Ingestion used to run in a FastAPI BackgroundTask: in-process, no retry,
+    no persistence, dying with the worker. A document whose ingestion was
+    interrupted sat in `processing` forever with nothing to retry it and
+    nothing recording why. This row exists so "what happened to my upload" is
+    a query rather than a guess.
+    """
+
+    __tablename__ = "jobs"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    job_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="queued")
+    document_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE")
+    )
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    error_message: Mapped[str | None] = mapped_column(Text)
+    # Carried from the request that enqueued the job, so a failure minutes or
+    # days later still correlates to the upload that caused it.
+    trace_id: Mapped[str | None] = mapped_column(String(64))
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        # "What is queued or running right now" is the query the worker
+        # health check and the stuck-document gauge both run.
+        Index("ix_jobs_status", "status"),
+        Index("ix_jobs_document", "document_id"),
+    )
+
+
 class ProjectModel(Base):
     """A job.
 

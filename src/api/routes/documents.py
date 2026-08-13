@@ -8,10 +8,11 @@ from fastapi import status as http_status
 from pydantic import BaseModel
 
 from src.api.dependencies import (
+    enqueue_ingestion,
     get_chunk_repository,
     get_document_repository,
-    get_ingestion_pipeline,
     get_intelligence_repository,
+    get_job_repository,
     get_query_pipeline,
     get_search_repository,
     get_vector_repository,
@@ -28,7 +29,7 @@ from src.governance.policy import get_policy
 from src.governance.rbac import Principal, Role, get_principal, require_role
 from src.governance.runtime_flags import get_flags
 from src.infrastructure.storage import get_blob_store
-from src.ingestion.pipeline import IngestionPipeline
+from src.jobs.models import JobType
 from src.monitoring.logger import get_logger
 from src.monitoring.prometheus_metrics import access_denied, documents_ingested
 
@@ -254,7 +255,12 @@ async def upload_document(
         },
     )
 
-    background_tasks.add_task(_run_ingestion, get_ingestion_pipeline(), document, file_path)
+    # Enqueued rather than run in this process. Ingestion of a drawing set is
+    # minutes of CPU-bound work -- CAD parsing, OCR, layout inference,
+    # embedding -- and running it here meant one upload could starve every
+    # other request on a single-worker uvicorn, and an API deploy mid-run
+    # silently abandoned the document.
+    job = await enqueue_ingestion(document.id, file_path)
 
     documents_ingested.labels(file_type=file_ext, status="pending").inc()
 
@@ -571,5 +577,94 @@ def _to_intelligence_response(summary: DocumentIntelligenceSummary) -> DocumentI
     )
 
 
-async def _run_ingestion(pipeline: IngestionPipeline, document: Document, file_path: Path) -> None:
-    await pipeline.ingest(document, file_path)
+class ReprocessResponse(BaseModel):
+    document_id: str
+    job_id: str
+    status: str
+    message: str
+
+
+@router.post("/documents/{document_id}/reprocess", response_model=ReprocessResponse)
+async def reprocess_document(
+    document_id: str,
+    principal: Principal = Depends(require_role(Role.STEWARD, Role.ADMIN)),
+) -> ReprocessResponse:
+    """Re-run ingestion for a document.
+
+    The way out of every stuck or failed ingestion, and the way to re-derive
+    a corpus after a chunking or embedding change -- previously the only
+    route back into the pipeline was to upload the file again, which created
+    a second document with a new id and left the first one stuck.
+
+    Idempotent by construction: JobRunner deletes what a previous attempt
+    wrote for this document before writing again, so re-running cannot
+    double its chunks. A document already being ingested is not enqueued
+    twice -- two workers writing the same chunks would leave the loser's
+    partial output behind as duplicates.
+    """
+    document = await _load_readable_document(document_id, principal)
+    doc_uuid = uuid.UUID(document_id)
+
+    if await get_job_repository().has_active_job(doc_uuid):
+        return ReprocessResponse(
+            document_id=document_id,
+            job_id="",
+            status="already_running",
+            message="Ingestion for this document is already in flight.",
+        )
+
+    job = await enqueue_ingestion(doc_uuid, None, job_type=JobType.REINDEX_DOCUMENT)
+    await audit_record(
+        action=AuditAction.DOCUMENT_UPLOADED,
+        actor_id=principal.user_id,
+        actor_role=principal.role,
+        resource_type="document",
+        resource_id=document_id,
+        outcome=AuditOutcome.COMPLETED,
+        reason="reprocess requested",
+    )
+    logger.info("document_reprocess_queued", doc_id=document_id, job_id=str(job.id))
+    return ReprocessResponse(
+        document_id=document_id,
+        job_id=str(job.id),
+        status=job.status.value,
+        message="Reprocessing queued.",
+    )
+
+
+class JobResponse(BaseModel):
+    id: str
+    job_type: str
+    status: str
+    attempts: int
+    max_attempts: int
+    error_message: str | None
+    created_at: str
+    finished_at: str | None
+
+
+@router.get("/documents/{document_id}/jobs", response_model=list[JobResponse])
+async def list_document_jobs(
+    document_id: str,
+    principal: Principal = Depends(get_principal),
+) -> list[JobResponse]:
+    """What has been attempted for this document, and what became of it.
+
+    The answer to "my upload never finished" -- previously unanswerable,
+    because nothing recorded the attempt.
+    """
+    await _load_readable_document(document_id, principal)
+    jobs = await get_job_repository().list_for_document(uuid.UUID(document_id))
+    return [
+        JobResponse(
+            id=str(job.id),
+            job_type=job.job_type.value,
+            status=job.status.value,
+            attempts=job.attempts,
+            max_attempts=job.max_attempts,
+            error_message=job.error_message,
+            created_at=job.created_at.isoformat(),
+            finished_at=job.finished_at.isoformat() if job.finished_at else None,
+        )
+        for job in jobs
+    ]

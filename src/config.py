@@ -141,6 +141,21 @@ class Settings(BaseSettings):
     blob_use_path_style: bool = True
     blob_multipart_threshold_bytes: int = 8 * 1024 * 1024
 
+    # Background jobs (src/jobs/).
+    #
+    # `inline` runs the work in the API process, as BackgroundTasks did --
+    # fine for development and tests, and it needs no worker container. It
+    # does not survive a restart, which is exactly why production wants arq.
+    job_backend: str = "inline"  # inline | arq
+    job_worker_concurrency: int = 2
+    # CAD conversion, OCR and embedding of a large drawing set run for
+    # minutes; the arq default of 300s would kill them mid-way.
+    job_timeout_seconds: int = 1800
+    job_max_attempts: int = 3
+    # A row still marked `running` after this long has no live worker behind
+    # it: whatever would have transitioned it is gone.
+    job_stuck_after_seconds: int = 3600
+
     # Reranking
     reranker_provider: str = "bge"
     bge_reranker_model: str = "BAAI/bge-reranker-large"

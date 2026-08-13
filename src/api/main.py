@@ -187,7 +187,13 @@ def create_app() -> FastAPI:
     # Prometheus metrics endpoint
     @app.get("/api/v1/metrics", include_in_schema=False)
     async def metrics():
+        from src.jobs.maintenance import refresh_queue_gauges
         from src.monitoring.prometheus_metrics import registry
+
+        # Refreshed at scrape time rather than on a timer: the number is
+        # never staler than the scrape interval, and there is no separate
+        # scheduler to forget to run. One indexed count.
+        await refresh_queue_gauges()
         return Response(
             content=generate_latest(registry),
             media_type=CONTENT_TYPE_LATEST,
