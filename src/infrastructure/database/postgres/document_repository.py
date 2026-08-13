@@ -66,15 +66,33 @@ class PostgresDocumentRepository(DocumentRepository):
         file_type: str | None = None,
         sensitivity_in: list[str] | None = None,
         search: str | None = None,
+        project_ids: list[uuid.UUID] | None = None,
     ) -> tuple[list[Document], int]:
+        """Documents this caller can reach: their own, plus their projects'.
+
+        The disjunction is the point of projects. With equality alone, two
+        engineers on the same job could not see each other's drawings, which
+        is the one thing a project is *for* -- and the detail endpoint would
+        happily open a document the list had hidden, so the two views
+        disagreed about who could read what.
+
+        `project_ids` is passed in rather than looked up here so the
+        repository keeps one reason to touch the database, and so a caller
+        that already holds the membership list does not fetch it twice.
+        """
         async with self._session_factory() as session:
-            stmt = select(DocumentModel).where(DocumentModel.user_id == user_id)
+            reach = DocumentModel.user_id == user_id
+            if project_ids:
+                reach = or_(reach, DocumentModel.project_id.in_(project_ids))
+            stmt = select(DocumentModel).where(reach)
             if status is not None:
                 stmt = stmt.where(DocumentModel.status == status.value)
             if file_type is not None:
                 stmt = stmt.where(DocumentModel.file_type == file_type)
             if domain is not None:
-                stmt = stmt.join(DocumentMetadataModel).where(DocumentMetadataModel.domain == domain)
+                stmt = stmt.join(DocumentMetadataModel).where(
+                    DocumentMetadataModel.domain == domain
+                )
 
             if search:
                 # Wildcards in user input are escaped so a search for "%"
@@ -83,12 +101,8 @@ class PostgresDocumentRepository(DocumentRepository):
                 # The `escape=` argument is required: without it Postgres has
                 # no escape character and the backslashes are matched
                 # literally, so the escaping silently does nothing.
-                pattern = (
-                    search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-                )
-                stmt = stmt.where(
-                    DocumentModel.file_name.ilike(f"%{pattern}%", escape="\\")
-                )
+                pattern = search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                stmt = stmt.where(DocumentModel.file_name.ilike(f"%{pattern}%", escape="\\"))
 
             if sensitivity_in is not None:
                 # Applied before the count and before LIMIT/OFFSET, so the

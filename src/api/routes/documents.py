@@ -14,6 +14,7 @@ from src.api.dependencies import (
     get_document_repository,
     get_intelligence_repository,
     get_job_repository,
+    get_project_repository,
     get_query_pipeline,
     get_search_repository,
     get_vector_repository,
@@ -126,11 +127,11 @@ class DocumentIntelligenceResponse(BaseModel):
     created_at: str | None
 
 
-
 async def _iter_upload(file: UploadFile, chunk_size: int = 1024 * 1024):
     """Yield the upload in chunks so it is never held whole in memory."""
     while chunk := await file.read(chunk_size):
         yield chunk
+
 
 @router.post("/documents", response_model=UploadResponse, status_code=http_status.HTTP_202_ACCEPTED)
 async def upload_document(
@@ -139,9 +140,9 @@ async def upload_document(
     domain: str = Form(default=""),
     tags: str = Form(default=""),
     sensitivity: str = Form(default=""),
-    principal: Principal = Depends(rate_limit_role(
-        "upload", Role.ANALYST, Role.STEWARD, Role.ADMIN
-    )),
+    principal: Principal = Depends(
+        rate_limit_role("upload", Role.ANALYST, Role.STEWARD, Role.ADMIN)
+    ),
 ) -> UploadResponse:
     """Accept a document for ingestion, classified at the point of entry.
 
@@ -287,12 +288,23 @@ async def list_documents(
     # fact (the previous behaviour) disclosed an accurate count of documents
     # the caller had no right to know existed, and returned short pages whose
     # length revealed how many had been withheld.
+    # Reach includes the caller's projects, so the list agrees with what the
+    # detail endpoint will actually open. Fail closed on a lookup error:
+    # owner-only is a narrower answer, never a wider one.
+    project_ids: list[uuid.UUID] = []
+    if principal.user_id is not None:
+        try:
+            project_ids = await get_project_repository().member_project_ids(principal.user_id)
+        except Exception as exc:
+            logger.warning("document_list_project_scope_failed", error=str(exc))
+
     documents, total = await document_repo.list_by_user(
         principal.user_id,
         page=page,
         size=size,
         sensitivity_in=Sensitivity.values_at_or_below(principal.clearance),
         search=search,
+        project_ids=project_ids,
     )
     return DocumentListResponse(
         items=[_to_response(d) for d in documents],
@@ -391,9 +403,7 @@ async def reclassify_document(
     await get_document_repository().update(document)
 
     doc_uuid = uuid.UUID(document_id)
-    chunks_reclassified = await get_chunk_repository().set_sensitivity(
-        doc_uuid, new_classification
-    )
+    chunks_reclassified = await get_chunk_repository().set_sensitivity(doc_uuid, new_classification)
     await get_vector_repository().set_payload_by_document(
         doc_uuid, {"sensitivity": new_classification.value}
     )
@@ -471,15 +481,34 @@ async def delete_document(
             "chunks": deleted_chunks,
         },
     )
-    return {"document_id": document_id, "deleted_chunks": deleted_chunks, "message": "Document deleted."}
+    return {
+        "document_id": document_id,
+        "deleted_chunks": deleted_chunks,
+        "message": "Document deleted.",
+    }
 
 
 async def _load_readable_document(document_id: str, principal: Principal) -> Document:
     """Fetch a document, 404-ing when the principal may not read it.
 
-    404 rather than 403 on the clearance failure is intentional: a 403 would
-    confirm that a document with that id exists, which is itself information
-    the caller is not cleared for. The audit entry records the true reason.
+    Two independent checks, and both must pass:
+
+    **Reach.** The caller owns the document, belongs to its project, or is an
+    admin. This used to be missing entirely -- the function checked only
+    clearance, so `GET /documents/{id}` handed any document to any
+    authenticated caller who knew its id, as did `/chunks`,
+    `/intelligence` and `/original`, which returns the original file. The
+    list endpoint scopes strictly to `user_id`, so the documents were hidden
+    from the UI while remaining fully readable to anyone who had ever seen an
+    id -- in a citation, a log line, or a colleague's URL.
+
+    **Clearance.** A project member still cannot read a document classified
+    above their clearance. The two dimensions are orthogonal and neither
+    substitutes for the other.
+
+    404 rather than 403 on either failure is intentional: a 403 would confirm
+    that a document with that id exists, which is itself information the
+    caller is not entitled to. The audit entry records the true reason.
     """
     try:
         doc_uuid = uuid.UUID(document_id)
@@ -491,6 +520,20 @@ async def _load_readable_document(document_id: str, principal: Principal) -> Doc
 
     document = await get_document_repository().get_by_id(doc_uuid)
     if document is None:
+        raise HTTPException(status_code=http_status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+    if not await _is_within_reach(document, principal):
+        access_denied.labels(reason="document_outside_scope").inc()
+        await audit_record(
+            action=AuditAction.ACCESS_DENIED,
+            actor_id=principal.user_id,
+            actor_role=principal.role,
+            resource_type="document",
+            resource_id=document_id,
+            outcome=AuditOutcome.DENIED,
+            reason="document belongs to another user and no shared project",
+            control_id="C-MAP-01",
+        )
         raise HTTPException(status_code=http_status.HTTP_404_NOT_FOUND, detail="Document not found")
 
     if not document.sensitivity.readable_with(principal.clearance):
@@ -509,6 +552,33 @@ async def _load_readable_document(document_id: str, principal: Principal) -> Doc
         raise HTTPException(status_code=http_status.HTTP_404_NOT_FOUND, detail="Document not found")
 
     return document
+
+
+async def _is_within_reach(document: Document, principal: Principal) -> bool:
+    """Whether this caller is entitled to the document at all.
+
+    Ownership or shared project membership. Admins are allowed through
+    deliberately: they can already reclassify and delete any document, and
+    the admin document views would otherwise show a list they cannot open.
+    Every such access is audited under the actor's real role, so the
+    exception is visible rather than silent.
+    """
+    if principal.is_admin:
+        return True
+    if principal.user_id is not None and document.user_id == principal.user_id:
+        return True
+    if document.project_id is None or principal.user_id is None:
+        return False
+
+    try:
+        return document.project_id in await get_project_repository().member_project_ids(
+            principal.user_id
+        )
+    except Exception as exc:
+        # Fail closed. A membership lookup that errors must deny, never
+        # widen -- the alternative turns a database blip into an access leak.
+        logger.warning("project_membership_lookup_failed", error=str(exc))
+        return False
 
 
 def _to_response(document: Document) -> DocumentResponse:
@@ -698,9 +768,7 @@ async def download_original(
     if not await blob_store.exists(document.file_path):
         # The row survived but the blob did not -- the exact symptom of the
         # unmounted-volume bug this storage layer replaced.
-        logger.error(
-            "document_blob_missing", doc_id=document_id, key=document.file_path
-        )
+        logger.error("document_blob_missing", doc_id=document_id, key=document.file_path)
         raise HTTPException(
             status_code=http_status.HTTP_410_GONE,
             detail="The stored file is no longer available.",
