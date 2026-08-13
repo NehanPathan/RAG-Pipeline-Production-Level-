@@ -3,7 +3,16 @@ from __future__ import annotations
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    UploadFile,
+)
 from fastapi import status as http_status
 from pydantic import BaseModel
 from starlette.responses import StreamingResponse
@@ -32,7 +41,7 @@ from src.governance.policy import get_policy
 from src.governance.rbac import Principal, Role, get_principal, require_role
 from src.governance.runtime_flags import get_flags
 from src.infrastructure.storage import get_blob_store
-from src.jobs.models import JobType
+from src.jobs.models import JobStatus, JobType
 from src.monitoring.logger import get_logger
 from src.monitoring.prometheus_metrics import access_denied, documents_ingested
 
@@ -773,6 +782,61 @@ class JobResponse(BaseModel):
     error_message: str | None
     created_at: str
     finished_at: str | None
+    # Which upload this job is for. Absent on the per-document route, where
+    # the document is already the context; present on the queue, where a
+    # list of bare ids cannot answer "which of my uploads is stuck".
+    document_id: str | None = None
+    document_name: str | None = None
+    started_at: str | None = None
+
+
+@router.get("/jobs", response_model=list[JobResponse])
+async def list_jobs(
+    status: list[str] = Query(default=[]),
+    limit: int = 50,
+    principal: Principal = Depends(get_principal),
+) -> list[JobResponse]:
+    """The ingestion queue: what is running, what failed, what is waiting.
+
+    Scoped to the caller's own uploads, because a job row carries no
+    classification of its own -- the safe scope is the ownership of the
+    document it refers to. Admins see the whole queue, matching the document
+    list and detail routes; operating the queue is the reason the role
+    exists.
+
+    An unknown status is ignored rather than rejected: a queue view polls
+    this on a timer, and a 422 from a stale client would replace the queue
+    with an error page rather than a slightly wrong filter.
+    """
+    wanted: list[JobStatus] = []
+    for value in status:
+        try:
+            wanted.append(JobStatus(value))
+        except ValueError:
+            logger.info("job_status_filter_ignored", value=value)
+
+    rows = await get_job_repository().list_recent(
+        statuses=wanted or None,
+        limit=limit,
+        user_id=principal.user_id,
+        all_documents=principal.is_admin,
+    )
+    return [
+        JobResponse(
+            id=str(job.id),
+            job_type=job.job_type.value,
+            status=job.status.value,
+            attempts=job.attempts,
+            max_attempts=job.max_attempts,
+            error_message=job.error_message,
+            created_at=job.created_at.isoformat(),
+            started_at=job.started_at.isoformat() if job.started_at else None,
+            finished_at=job.finished_at.isoformat() if job.finished_at else None,
+            document_id=str(job.document_id) if job.document_id else None,
+            document_name=document_name,
+        )
+        for job, document_name in rows
+    ]
 
 
 @router.get("/documents/{document_id}/jobs", response_model=list[JobResponse])

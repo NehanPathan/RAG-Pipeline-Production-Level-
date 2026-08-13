@@ -298,7 +298,12 @@ export const realApi: ApiSurface = {
     return notImplemented("GET /metrics/summary (JSON tiles)")
   },
 
-  async listJobs() {
-    return notImplemented("GET /jobs")
+  listJobs(params = {}) {
+    // `status` repeats rather than joining with commas: FastAPI reads a
+    // repeated query parameter as a list, and a comma-joined string would
+    // arrive as one unrecognised status and be ignored.
+    return request<T.Job[]>("/jobs", {
+      query: { status: params.status, limit: params.limit },
+    })
   },
 }

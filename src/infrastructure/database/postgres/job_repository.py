@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from src.infrastructure.database.postgres.models import JobModel
+from src.infrastructure.database.postgres.models import DocumentModel, JobModel
 from src.jobs.models import Job, JobStatus, JobType
 
 
@@ -65,6 +65,41 @@ class PostgresJobRepository:
                 .order_by(JobModel.created_at.desc())
             )
             return [_to_entity(m) for m in result.scalars().all()]
+
+    async def list_recent(
+        self,
+        statuses: list[JobStatus] | None = None,
+        limit: int = 50,
+        user_id: uuid.UUID | None = None,
+        all_documents: bool = False,
+    ) -> list[tuple[Job, str | None]]:
+        """The queue: recent jobs newest first, each with its document's name.
+
+        Returns the name alongside the job because a queue of bare UUIDs
+        cannot answer the question a queue is opened to answer -- which
+        upload is stuck. A left join, so a job whose document was deleted
+        still appears rather than vanishing from the history of what ran.
+
+        Scoped to the caller's own documents unless `all_documents`. A job row
+        carries no classification of its own, so the safe scope is the
+        ownership of the document it refers to.
+        """
+        async with self._session_factory() as session:
+            stmt = (
+                select(JobModel, DocumentModel.file_name)
+                .outerjoin(DocumentModel, DocumentModel.id == JobModel.document_id)
+                .order_by(JobModel.created_at.desc())
+                .limit(max(1, min(limit, 500)))
+            )
+            if statuses:
+                stmt = stmt.where(JobModel.status.in_([s.value for s in statuses]))
+            if not all_documents:
+                # A job with no document is infrastructure work, not someone's
+                # upload, and is not attributable to a user.
+                stmt = stmt.where(DocumentModel.user_id == user_id)
+
+            result = await session.execute(stmt)
+            return [(_to_entity(job), name) for job, name in result.all()]
 
     async def has_active_job(self, document_id: uuid.UUID) -> bool:
         """Whether this document already has work in flight.
