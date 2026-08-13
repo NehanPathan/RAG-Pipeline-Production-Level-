@@ -38,6 +38,31 @@ services:
       - ./alembic.ini:/app/alembic.ini:ro
       - ./docs:/app/docs:ro
 
+  # In development the frontend runs the Vite dev server instead of nginx, so
+  # an edit is a hot reload rather than an image rebuild. `target: builder`
+  # reuses the first stage of docker/frontend.Dockerfile, which already has
+  # Node and an installed node_modules.
+  frontend:
+    build:
+      target: builder
+    command: ["npm", "run", "dev"]
+    environment:
+      - VITE_HOST=0.0.0.0
+      - VITE_PORT=8080
+      # The browser reaches the dev server on the published host port, not on
+      # 8080, and the HMR websocket has to be told so.
+      - VITE_HMR_CLIENT_PORT=15173
+      - VITE_API_TARGET=http://api:8000
+    volumes:
+      # Only the source is mounted. Mounting ./frontend wholesale would shadow
+      # the container's node_modules with the host's, which on Windows means
+      # native binaries built for the wrong platform.
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+      - ./frontend/index.html:/app/index.html
+      - ./frontend/vite.config.ts:/app/vite.config.ts
+      - ./frontend/tsconfig.json:/app/tsconfig.json
+
   streamlit:
     environment:
       - API_BASE_URL=http://api:8000

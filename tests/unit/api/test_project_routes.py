@@ -61,6 +61,22 @@ class _FakeProjectRepository:
     async def list_members(self, project_id):
         return self.members.get(project_id, [])
 
+    async def list_member_details(self, project_id):
+        from src.domain.entities.project import ProjectMemberDetail
+
+        return [
+            ProjectMemberDetail(
+                project_id=m.project_id,
+                user_id=m.user_id,
+                project_role=m.project_role,
+                added_at=m.added_at,
+                email=f"{m.user_id}@test",
+                display_name="Test User",
+                platform_role="analyst",
+            )
+            for m in self.members.get(project_id, [])
+        ]
+
     async def member_project_ids(self, user_id):
         return [m.project_id for ms in self.members.values() for m in ms if m.user_id == user_id]
 
@@ -331,3 +347,155 @@ class TestShape:
         assert body["client_name"] == "Acme"
         assert body["status"] == "active"
         assert body["my_role"] == "owner"
+
+
+class TestResponseShapeMatchesTheClient:
+    """The client casts responses (`request<T.Project[]>`) rather than
+    validating them, so a field the server omits becomes `undefined` at
+    runtime with nothing raised anywhere. TypeScript cannot catch it; only
+    an assertion on the wire format can.
+
+    These names are copied from frontend/src/api/types.ts. If that file
+    changes, this fails -- which is the point.
+    """
+
+    def test_a_project_carries_every_declared_field(self, client, repositories):
+        project = _existing_project(repositories)
+
+        body = client.get(f"/api/v1/projects/{project.id}").json()
+
+        assert set(body) >= {
+            "id",
+            "project_number",
+            "name",
+            "client_name",
+            "status",
+            "start_date",
+            "target_completion_date",
+            "default_sensitivity",
+            "created_at",
+            "updated_at",
+            "archived_at",
+        }
+
+    def test_a_member_carries_who_they_are_not_just_an_id(self, client, repositories):
+        """A page of bare UUIDs cannot support the decision the member list
+        exists for: whether to remove someone."""
+        project = _existing_project(repositories)
+
+        body = client.get(f"/api/v1/projects/{project.id}/members").json()
+
+        assert set(body[0]) >= {
+            "project_id",
+            "user_id",
+            "project_role",
+            "added_at",
+            "email",
+            "display_name",
+            "platform_role",
+        }
+        assert body[0]["project_role"] == "owner"
+        assert body[0]["email"]
+
+    def test_a_drawing_carries_every_declared_field(self, client, repositories):
+        _, drawings, _ = repositories
+        project = _existing_project(repositories)
+        drawing = Drawing(drawing_number="S-104", project_id=project.id)
+        drawings.drawings[drawing.id] = drawing
+
+        body = client.get(f"/api/v1/projects/{project.id}/drawings").json()
+
+        assert set(body[0]) >= {
+            "id",
+            "drawing_number",
+            "sheet_number",
+            "project_id",
+            "project_number",
+            "discipline",
+            "title",
+            "created_at",
+            "updated_at",
+            "revision_count",
+            "current_revision_label",
+            "current_document_id",
+        }
+
+    def test_a_revision_carries_every_declared_field(self, client, repositories):
+        _, drawings, documents = repositories
+        project = _existing_project(repositories)
+        drawing = Drawing(drawing_number="S-104", project_id=project.id)
+        drawings.drawings[drawing.id] = drawing
+        doc = _Doc("C", 3, is_latest=True)
+        documents.documents[doc.id] = doc
+        drawings.revisions[drawing.id] = [doc.id]
+
+        body = client.get(f"/api/v1/drawings/{drawing.id}/revisions").json()
+
+        assert set(body[0]) >= {
+            "document_id",
+            "drawing_id",
+            "revision_label",
+            "revision_index",
+            "revision_date",
+            "revision_note",
+            "is_latest",
+            "superseded_at",
+            "superseded_by_document_id",
+            "file_name",
+            "status",
+            "page_count",
+            "created_at",
+        }
+
+
+class TestGlobalDrawingList:
+    def test_it_spans_every_project_the_caller_belongs_to(self, client, repositories):
+        _, drawings, _ = repositories
+        project = _existing_project(repositories)
+        for number in ("S-101", "S-104"):
+            drawing = Drawing(drawing_number=number, project_id=project.id)
+            drawings.drawings[drawing.id] = drawing
+
+        body = client.get("/api/v1/drawings").json()
+
+        assert {d["drawing_number"] for d in body} == {"S-101", "S-104"}
+        assert all(d["project_number"] == "2024-0117" for d in body)
+
+    def test_it_never_reaches_a_project_the_caller_is_not_in(self, client, repositories):
+        """Scope comes from membership, never from the request."""
+        _, drawings, _ = repositories
+        other = _existing_project(repositories, member_role=None)
+        drawing = Drawing(drawing_number="S-999", project_id=other.id)
+        drawings.drawings[drawing.id] = drawing
+
+        assert client.get("/api/v1/drawings").json() == []
+        assert client.get(f"/api/v1/drawings?project_id={other.id}").json() == []
+
+    def test_search_narrows_by_number_or_title(self, client, repositories):
+        _, drawings, _ = repositories
+        project = _existing_project(repositories)
+        for number, title in (("S-101", "Foundation Plan"), ("S-104", "Roof Framing")):
+            drawing = Drawing(drawing_number=number, project_id=project.id, title=title)
+            drawings.drawings[drawing.id] = drawing
+
+        by_number = client.get("/api/v1/drawings?search=S-104").json()
+        by_title = client.get("/api/v1/drawings?search=roof").json()
+
+        assert [d["drawing_number"] for d in by_number] == ["S-104"]
+        assert [d["drawing_number"] for d in by_title] == ["S-104"]
+
+    def test_a_single_drawing_is_reachable_and_scoped(self, client, repositories):
+        _, drawings, _ = repositories
+        project = _existing_project(repositories)
+        drawing = Drawing(drawing_number="S-104", project_id=project.id)
+        drawings.drawings[drawing.id] = drawing
+
+        assert client.get(f"/api/v1/drawings/{drawing.id}").json()["drawing_number"] == "S-104"
+
+    def test_a_drawing_in_someone_elses_project_is_404(self, client, repositories):
+        _, drawings, _ = repositories
+        other = _existing_project(repositories, member_role=None)
+        drawing = Drawing(drawing_number="S-999", project_id=other.id)
+        drawings.drawings[drawing.id] = drawing
+
+        assert client.get(f"/api/v1/drawings/{drawing.id}").status_code == 404

@@ -3,7 +3,13 @@ from __future__ import annotations
 import uuid
 from abc import ABC, abstractmethod
 
-from src.domain.entities.project import Drawing, Project, ProjectMembership, ProjectRole
+from src.domain.entities.project import (
+    Drawing,
+    Project,
+    ProjectMemberDetail,
+    ProjectMembership,
+    ProjectRole,
+)
 
 
 class ProjectRepository(ABC):
@@ -33,6 +39,16 @@ class ProjectRepository(ABC):
 
     @abstractmethod
     async def list_members(self, project_id: uuid.UUID) -> list[ProjectMembership]: ...
+
+    @abstractmethod
+    async def list_member_details(self, project_id: uuid.UUID) -> list[ProjectMemberDetail]:
+        """Members joined to their user records.
+
+        Separate from `list_members` on purpose: the access checks run on
+        every request and need only the user id, so they must not pay for a
+        join they do not use.
+        """
+        ...
 
     @abstractmethod
     async def member_project_ids(self, user_id: uuid.UUID) -> list[uuid.UUID]:

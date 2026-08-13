@@ -10,11 +10,17 @@
 # Container-internal ports are unchanged, so service-to-service URLs read
 # `postgres:5432` as usual. Only the host side is remapped.
 #
-#   API        http://localhost:18000        Streamlit  http://localhost:18501
+#   Frontend   http://localhost:15173        Streamlit  http://localhost:18501
+#   API        http://localhost:18000
 #   Postgres   localhost:15432               Redis      localhost:16379
 #   Qdrant     http://localhost:16333        ES         http://localhost:19200
 #   MinIO      http://localhost:19000        console    http://localhost:19001
 #   Grafana    http://localhost:13000        Prometheus http://localhost:19090
+#
+# Two UIs, on purpose and temporarily. Streamlit was built first to de-risk
+# the new APIs before a React app was written against them (see 14.3); the
+# React frontend is what ships. Streamlit stays until the remaining routes it
+# exercises have equivalents, then it goes.
 
 services:
   api:
@@ -130,6 +136,31 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  # The React frontend. Static files behind nginx, which also reverse-proxies
+  # /api onto the API container so the browser only ever sees one origin --
+  # see docker/nginx/frontend.conf for why that is more than cosmetic.
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/frontend.Dockerfile
+      args:
+        # Vite inlines these at build time. `false` is the only correct value
+        # for a deployed container: the bundled sample corpus would render a
+        # convincing product full of drawings that do not exist.
+        VITE_USE_MOCKS: "false"
+        VITE_API_BASE: /api/v1
+    ports:
+      - "15173:8080"
+    depends_on:
+      api:
+        condition: service_started
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
   streamlit:
     build:

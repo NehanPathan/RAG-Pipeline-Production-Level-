@@ -97,3 +97,4 @@ frontend/dist/
 frontend/.vite/
 npm-debug.log*
 yarn-error.log*
+frontend/tsconfig.tsbuildinfo

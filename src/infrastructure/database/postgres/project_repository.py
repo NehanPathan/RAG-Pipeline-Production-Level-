@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from src.domain.entities.project import (
     Drawing,
     Project,
+    ProjectMemberDetail,
     ProjectMembership,
     ProjectRole,
     ProjectStatus,
@@ -21,6 +22,7 @@ from src.infrastructure.database.postgres.models import (
     DrawingModel,
     ProjectMemberModel,
     ProjectModel,
+    UserModel,
 )
 
 
@@ -122,6 +124,33 @@ class PostgresProjectRepository(ProjectRepository):
                     added_at=m.added_at,
                 )
                 for m in result.scalars().all()
+            ]
+
+    async def list_member_details(self, project_id: uuid.UUID) -> list[ProjectMemberDetail]:
+        """Members joined to their user rows, in one query.
+
+        Left join rather than inner: a membership whose user row has been
+        deleted still grants access, so hiding it from the list would leave
+        an access grant nobody can see to revoke.
+        """
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(ProjectMemberModel, UserModel)
+                .outerjoin(UserModel, UserModel.id == ProjectMemberModel.user_id)
+                .where(ProjectMemberModel.project_id == project_id)
+                .order_by(ProjectMemberModel.added_at)
+            )
+            return [
+                ProjectMemberDetail(
+                    project_id=member.project_id,
+                    user_id=member.user_id,
+                    project_role=ProjectRole(member.project_role),
+                    added_at=member.added_at,
+                    email=user.email if user else "",
+                    display_name=user.display_name if user else None,
+                    platform_role=user.role if user else "viewer",
+                )
+                for member, user in result.all()
             ]
 
     async def member_project_ids(self, user_id: uuid.UUID) -> list[uuid.UUID]:

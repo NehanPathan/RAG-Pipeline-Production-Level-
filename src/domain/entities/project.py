@@ -73,6 +73,25 @@ class ProjectMembership:
         return self.project_role in (ProjectRole.OWNER, ProjectRole.CONTRIBUTOR)
 
 
+@dataclass(frozen=True)
+class ProjectMemberDetail:
+    """A membership joined to who the member actually is.
+
+    `ProjectMembership` carries only a user id, which is all the access
+    checks need and all they should depend on. A member *list*, though, is
+    read by a person deciding whether to remove someone, and a page of bare
+    UUIDs cannot support that decision.
+    """
+
+    project_id: uuid.UUID
+    user_id: uuid.UUID
+    project_role: ProjectRole
+    added_at: datetime
+    email: str
+    display_name: str | None = None
+    platform_role: str = "viewer"
+
+
 @dataclass
 class Drawing:
     drawing_number: str
@@ -86,7 +105,11 @@ class Drawing:
 
     @property
     def label(self) -> str:
-        return f"{self.drawing_number}/{self.sheet_number}" if self.sheet_number else self.drawing_number
+        return (
+            f"{self.drawing_number}/{self.sheet_number}"
+            if self.sheet_number
+            else self.drawing_number
+        )
 
 
 # Revision labels are not consistent across practices. Alphabetic (A, B, C),

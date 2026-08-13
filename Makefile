@@ -7,6 +7,7 @@ help:
 	@echo "Usage:"
 	@echo "  make dev          Start all services in development mode"
 	@echo "  make build        Build Docker images"
+	@echo "  make frontend     Rebuild and restart just the React frontend"
 	@echo "  make test         Run test suite with coverage"
 	@echo "  make lint         Run ruff linter"
 	@echo "  make type-check   Run mypy type checker"
@@ -30,6 +31,13 @@ dev:
 
 build:
 	docker compose build
+
+# The frontend is a static bundle baked into its image, so a source change
+# needs a rebuild — unlike the API, whose src/ is bind-mounted. `make dev`
+# runs the Vite dev server instead and needs none of this.
+frontend:
+	docker compose build frontend
+	docker compose up -d --no-deps frontend
 
 stop:
 	docker compose down
