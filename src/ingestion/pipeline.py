@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from src.application.use_cases.register_revision import RegisterRevision
 from src.domain.entities.document import Document, DocumentChunk, DocumentStatus
 from src.domain.repositories.document_repository import ChunkRepository, DocumentRepository
 from src.domain.repositories.search_repository import SearchRepository
@@ -12,6 +13,7 @@ from src.domain.repositories.vector_repository import VectorRepository
 from src.ingestion.chunkers.chunking_strategy import ChunkingStrategy
 from src.ingestion.embedders.embedding_strategy import EmbeddingStrategy
 from src.ingestion.enrichers.metadata_enricher import MetadataEnricher
+from src.ingestion.extractors.drawing_identity import CUSTOM_METADATA_KEY, DrawingIdentity
 from src.ingestion.loaders.base import DocumentLoader
 from src.ingestion.parsing.parsed_document import ParsedDocument
 from src.ingestion.parsing.parsing_orchestrator import DocumentParsingService
@@ -68,6 +70,7 @@ class IngestionPipeline:
         vector_repo: VectorRepository,
         search_repo: SearchRepository,
         intelligence_recorder: IntelligenceRecorder | None = None,
+        register_revision: RegisterRevision | None = None,
     ) -> None:
         self._loaders = loaders
         self._enricher = enricher
@@ -79,6 +82,9 @@ class IngestionPipeline:
         self._vector_repo = vector_repo
         self._search_repo = search_repo
         self._intelligence_recorder = intelligence_recorder
+        # Optional so the pipeline still runs without a drawing register --
+        # a plain document corpus has no revisions to track.
+        self._register_revision = register_revision
 
     async def ingest(self, document: Document, file_path: Path) -> IngestionResult:
         logger.info("ingestion_start", document_id=str(document.id), file=document.file_name)
@@ -107,6 +113,15 @@ class IngestionPipeline:
                 file_name=document.file_name,
             )
 
+            # Step 2b: Attach this document to its drawing as a revision.
+            #
+            # Before the chunk loop below, because that loop denormalizes
+            # `drawing_id`, `revision_label` and `is_latest` onto every
+            # chunk -- registering afterwards would leave this document's own
+            # chunks carrying the pre-registration values while the
+            # superseded revision's were correctly updated.
+            drawing_number = await self._register_drawing_revision(document)
+
             # Step 3: Chunking -- HybridChunkingPipeline in production,
             # ParentChildOnlyStrategy for the Part 8 A/B benchmark (Gap 5)
             chunks = await self._chunking_strategy.chunk(document.id, parsed_document)
@@ -129,6 +144,7 @@ class IngestionPipeline:
                 # before any candidate reaches the application.
                 chunk.project_id = document.project_id
                 chunk.drawing_id = document.drawing_id
+                chunk.drawing_number = drawing_number
                 chunk.revision_label = document.revision_label
                 chunk.is_latest = document.is_latest
 
@@ -196,6 +212,54 @@ class IngestionPipeline:
                 status=DocumentStatus.FAILED,
                 error=error_msg,
             )
+
+    async def _register_drawing_revision(self, document: Document) -> str | None:
+        """Attach the document to its drawing, if it can be identified.
+
+        Returns the drawing number for denormalization onto chunks, or None
+        when the document is not a drawing or its identity is unclear.
+
+        Never fatal. A drawing register that refuses the whole upload because
+        it could not read a title block is worse than one with a gap in it:
+        the document is still worth indexing and searching, and the number
+        can be set by hand afterwards.
+        """
+        if self._register_revision is None:
+            return None
+
+        stored = (document.metadata.custom_metadata or {}).get(CUSTOM_METADATA_KEY)
+        identity = DrawingIdentity.from_dict(stored)
+        if identity is None or identity.revision_label is None:
+            # A drawing number without a revision cannot be placed in a
+            # revision family: with nothing to sort on, every upload of the
+            # sheet would claim to supersede the last, in upload order.
+            return None
+
+        try:
+            registration = await self._register_revision.execute(
+                document,
+                drawing_number=identity.drawing_number,
+                revision_label=identity.revision_label,
+            )
+        except Exception as exc:
+            logger.warning(
+                "revision_registration_failed",
+                document_id=str(document.id),
+                drawing_number=identity.drawing_number,
+                error=str(exc),
+            )
+            return None
+
+        logger.info(
+            "revision_registered",
+            document_id=str(document.id),
+            drawing_number=identity.drawing_number,
+            revision=identity.revision_label,
+            is_current=registration.is_current,
+            superseded=str(registration.superseded_document_id or ""),
+            reason=identity.reason,
+        )
+        return registration.drawing.drawing_number
 
     def _select_loader(self, file_type: str, extension: str) -> DocumentLoader:
         mime_map = {

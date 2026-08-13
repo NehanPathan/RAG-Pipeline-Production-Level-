@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from src.application.use_cases.register_revision import RegisterRevision
 from src.config import get_settings
 from src.evaluation.online.feedback import FeedbackService
 from src.evaluation.online.sampler import OnlineEvaluator
@@ -570,4 +571,27 @@ def _build_ingestion_pipeline() -> IngestionPipeline:
         vector_repo=_get_vector_repo(),
         search_repo=_get_search_repo(),
         intelligence_recorder=DocumentIntelligenceRecorder(get_intelligence_repository()),
+        # Only wired when steel entity extraction is on: without it there is
+        # no drawing number to register against, and every document would
+        # take the same no-identity path at a small cost per upload.
+        register_revision=(
+            RegisterRevision(
+                drawing_repo=get_drawing_repository(),
+                document_repo=get_document_repository(),
+                vector_repo=_get_vector_repo(),
+                search_repo=_get_search_repo(),
+                # A cached answer derived from Rev B is wrong the moment Rev
+                # C lands, so superseding has to evict it. Built here rather
+                # than taken from the query pipeline: ingestion has no other
+                # reason to depend on retrieval, and the use case needs one
+                # function, not the whole pipeline.
+                cache_invalidator=SemanticCache(
+                    repository=_get_cache_repo(),
+                    embedding_provider=_get_embedder(),
+                    score_threshold=settings.semantic_cache_score_threshold,
+                ).invalidate_document,
+            )
+            if entity_extractor is not None
+            else None
+        ),
     )

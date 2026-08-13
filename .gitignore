@@ -84,3 +84,16 @@ Thumbs.db
 # ====================================================
 *.sqlite3
 *.db
+
+# ====================================================
+# Node / frontend
+# ====================================================
+# A dependency tree, not source. `git add -A` swept 10,889 of these into a
+# commit once; the negation rule above (`!**/node_modules/**/*.key`) exempts
+# key files from the secrets pattern and was the only mention of the
+# directory, so nothing had ever ignored it.
+node_modules/
+frontend/dist/
+frontend/.vite/
+npm-debug.log*
+yarn-error.log*

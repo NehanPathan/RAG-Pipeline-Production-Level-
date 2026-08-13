@@ -20,6 +20,10 @@ from __future__ import annotations
 
 from src.domain.entities.document import DocumentMetadata
 from src.ingestion.enrichers.llm_enricher import LLMMetadataEnricher
+from src.ingestion.extractors.drawing_identity import (
+    CUSTOM_METADATA_KEY,
+    extract_drawing_identity,
+)
 from src.ingestion.extractors.models import SteelEntityType
 from src.ingestion.extractors.regex_extractor import RegexSteelEntityExtractor
 from src.ingestion.parsing.parsed_document import ParsedDocument
@@ -72,6 +76,14 @@ class DomainMetadataEnricher:
             return metadata
 
         metadata.custom_metadata["steel_entities"] = result.to_dict()
+
+        # Which drawing this document *is*, as opposed to which it mentions.
+        # Computed here because this is where the extraction result still
+        # exists in full -- the persisted entity dicts drop occurrences, and
+        # the identity is decided by how often a number is repeated.
+        identity = extract_drawing_identity(result)
+        if identity is not None:
+            metadata.custom_metadata[CUSTOM_METADATA_KEY] = identity.to_dict()
 
         existing = {t.lower() for t in metadata.tags}
         for canonical in result.canonicals(*_TAGGABLE):
