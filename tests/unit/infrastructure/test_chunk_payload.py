@@ -20,6 +20,7 @@ def _chunk() -> DocumentChunk:
             section_title="4.2 Primary Framing",
             heading_level=2,
             contains_table=False,
+            content_kind="scanned_drawing",
         ),
         user_id=uuid.uuid4(),
         domain="Engineering",
@@ -100,3 +101,41 @@ def test_missing_optional_keys_do_not_raise():
     assert restored.chunk_metadata.section_title is None
     assert restored.tags == []
     assert restored.user_id is None
+
+
+def test_content_kind_survives_the_round_trip():
+    """How the text was obtained has to reach the search backends.
+
+    It is the difference between a dimension read from a DXF and one OCR'd
+    off a scanned sheet, and an answer quoting a measurement should be able
+    to say which it had. A payload-only field would also be erased by the
+    first run of scripts/reindex_chunks.py, which rebuilds both backends
+    from Postgres -- hence the matching column in migration 0007.
+    """
+    original = _chunk()
+
+    payload = chunk_to_payload(original)
+
+    assert payload["content_kind"] == "scanned_drawing"
+    assert payload_to_chunk(payload, original.id).chunk_metadata.content_kind == "scanned_drawing"
+
+
+def test_content_kind_is_indexed_as_a_keyword_not_analysed_text():
+    """It is filtered on exactly, never searched.
+
+    Analysed text would split "scanned_drawing" into tokens and stop the
+    term filter matching at all.
+    """
+    assert INDEX_MAPPINGS["mappings"]["properties"]["content_kind"] == {"type": "keyword"}
+
+
+def test_a_chunk_ingested_before_classification_existed_has_no_kind():
+    """NULL means "unknown", and must not be guessed at.
+
+    Asserting prose for every pre-existing chunk would mislabel every
+    drawing already in the corpus.
+    """
+    payload = chunk_to_payload(_chunk())
+    del payload["content_kind"]
+
+    assert payload_to_chunk(payload, uuid.uuid4()).chunk_metadata.content_kind is None

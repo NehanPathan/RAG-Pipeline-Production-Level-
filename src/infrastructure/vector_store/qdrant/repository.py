@@ -31,6 +31,7 @@ INDEXED_PAYLOAD_FIELDS = (
     "file_type",
     "sensitivity",
     "entity_canonicals",
+    "content_kind",
     "project_id",
     "drawing_id",
     "is_latest",

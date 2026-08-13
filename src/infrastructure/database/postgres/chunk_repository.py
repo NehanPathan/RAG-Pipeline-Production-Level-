@@ -62,6 +62,7 @@ class PostgresChunkRepository(ChunkRepository):
                         drawing_number=chunk.drawing_number,
                         revision_label=chunk.revision_label,
                         is_latest=chunk.is_latest,
+                        content_kind=chunk.chunk_metadata.content_kind,
                     )
                 )
             await session.commit()
@@ -142,6 +143,7 @@ def _to_entity(model: DocumentChunkModel) -> DocumentChunk:
             semantic_cluster=model.semantic_cluster,
             ocr_confidence=model.ocr_confidence,
             language=model.language,
+            content_kind=model.content_kind,
         ),
         qdrant_point_id=model.qdrant_point_id,
         created_at=model.created_at,

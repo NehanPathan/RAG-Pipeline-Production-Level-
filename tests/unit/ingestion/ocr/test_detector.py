@@ -95,3 +95,60 @@ def test_unrecognized_extension_defaults_to_skip():
     detector = OCRDetector()
     decision = detector.detect(_uniform_doc(word_count=0, page_count=1), file_type="xyz")
     assert decision.required is False
+
+
+# A PDF with no text layer of its own. Word density cannot see this case:
+# Docling OCRs a scanned page internally and returns the result as ordinary
+# text, so the document arrives looking text-rich. What it lacks is a
+# confidence score and word coordinates -- which is why our own OCR has to
+# run anyway. See src/ingestion/parsing/drawing_detector.py.
+
+
+def test_pdf_without_a_text_layer_is_ocred_however_text_rich_it_looks():
+    detector = OCRDetector(min_words_per_page=10.0)
+    # 300 words/page: comfortably above the density floor, and skipped
+    # before this. Every one of those words came from someone else's OCR.
+    raw_doc = _uniform_doc(word_count=900, page_count=3)
+
+    decision = detector.detect(raw_doc, file_type="pdf", has_native_text_layer=False)
+
+    assert decision.required is True
+    assert decision.pages_required == [1, 2, 3]
+    assert "no native text layer" in decision.reason
+
+
+def test_pdf_with_a_text_layer_still_follows_the_density_rules():
+    detector = OCRDetector(min_words_per_page=10.0)
+
+    rich = detector.detect(
+        _uniform_doc(word_count=3000, page_count=10), file_type="pdf", has_native_text_layer=True
+    )
+    sparse = detector.detect(
+        _raw_doc({1: 500, 2: 0, 3: 400}, page_count=3), file_type="pdf", has_native_text_layer=True
+    )
+
+    assert rich.required is False
+    # A page can be blank in an otherwise native PDF -- having a text layer
+    # is not a reason to stop checking individual pages.
+    assert sparse.required is True
+    assert sparse.pages_required == [2]
+
+
+def test_an_unknown_text_layer_preserves_the_original_behaviour():
+    """`None` means "no opinion" and must not be read as "no text layer"."""
+    detector = OCRDetector(min_words_per_page=10.0)
+    raw_doc = _uniform_doc(word_count=3000, page_count=10)
+
+    assert detector.detect(raw_doc, file_type="pdf").required is False
+    assert detector.detect(raw_doc, file_type="pdf", has_native_text_layer=None).required is False
+
+
+def test_forcing_ocr_on_scanned_pdfs_can_be_switched_off():
+    """The escape hatch for a deployment where re-OCRing scans costs too much."""
+    detector = OCRDetector(min_words_per_page=10.0, ocr_pdfs_without_text_layer=False)
+
+    decision = detector.detect(
+        _uniform_doc(word_count=900, page_count=3), file_type="pdf", has_native_text_layer=False
+    )
+
+    assert decision.required is False

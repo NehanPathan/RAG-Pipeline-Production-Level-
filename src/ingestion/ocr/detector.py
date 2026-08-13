@@ -37,10 +37,23 @@ class OCRDetector:
     docs/architecture/12_phase4a_design_review.md.
     """
 
-    def __init__(self, min_words_per_page: float = 10.0) -> None:
+    def __init__(
+        self, min_words_per_page: float = 10.0, ocr_pdfs_without_text_layer: bool = True
+    ) -> None:
         self._min_words_per_page = min_words_per_page
+        self._ocr_pdfs_without_text_layer = ocr_pdfs_without_text_layer
 
-    def detect(self, raw_document: RawDocument, file_type: str) -> OCRDecision:
+    def detect(
+        self,
+        raw_document: RawDocument,
+        file_type: str,
+        has_native_text_layer: bool | None = None,
+    ) -> OCRDecision:
+        """`has_native_text_layer` is the caller's answer to "did this text
+        come from the file, or from an OCR engine?" -- see
+        `DrawingContentDetector`. `None` means the caller has no opinion and
+        only the word-density rules below apply.
+        """
         ext = file_type.lower().lstrip(".")
 
         if ext in _NEVER_OCR_EXTENSIONS:
@@ -52,6 +65,24 @@ class OCRDetector:
             )
 
         if ext == "pdf":
+            # Word density cannot see this case. Docling runs its own OCR on
+            # a scanned page and returns the result as ordinary text, so a
+            # scan and a plotted sheet both arrive looking text-rich and both
+            # get skipped here. The difference is that the scan's text has no
+            # confidence score and no word coordinates -- the two things the
+            # chunk validator and region highlighting are built on. Running
+            # our own OCR is what recovers them.
+            if has_native_text_layer is False and self._ocr_pdfs_without_text_layer:
+                pages = list(range(1, (raw_document.page_count or 1) + 1))
+                return OCRDecision(
+                    required=True,
+                    reason=(
+                        "PDF has no native text layer: any text present is OCR-derived "
+                        "and carries no confidence or word geometry"
+                    ),
+                    pages_required=pages,
+                )
+
             sparse_pages = self._find_sparse_pages(raw_document)
             if sparse_pages:
                 total_pages = raw_document.page_count or len(sparse_pages)

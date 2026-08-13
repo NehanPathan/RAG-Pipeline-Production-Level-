@@ -40,6 +40,9 @@ FACETABLE_FIELDS = (
     "tags",
     "entity_canonicals",
     "sensitivity",
+    # Provenance quality -- "cad_native" vs "scanned_drawing" is the
+    # difference between an exact dimension and an OCR reading of one.
+    "content_kind",
 )
 
 
@@ -60,6 +63,9 @@ class SearchRequest(BaseModel):
     tags: list[str] = Field(default_factory=list)
     file_type: str | None = None
     domain: str | None = None
+    # "cad_native" | "vector_drawing" | "scanned_drawing" | "scanned_prose" |
+    # "prose". Narrows to a provenance class -- see ContentKind.
+    content_kinds: list[str] = Field(default_factory=list)
     # Superseded revisions are excluded unless asked for: answering from an
     # old sheet is worse than not answering.
     include_superseded: bool = False
@@ -76,6 +82,7 @@ class SearchHit(BaseModel):
     revision_label: str | None
     project_number: str | None
     entity_canonicals: list[str]
+    content_kind: str | None
     content: str
     score: float
 
@@ -160,6 +167,8 @@ async def structured_search(
         filters.entity_canonicals = body.entity_canonicals
     if body.drawing_numbers:
         filters.drawing_numbers = body.drawing_numbers
+    if body.content_kinds:
+        filters.content_kinds = body.content_kinds
 
     results = await get_search_repository().search(
         body.query or "*", top_k=body.top_k, filters=filters
@@ -183,6 +192,7 @@ async def structured_search(
                         if e.get("canonical")
                     }
                 ),
+                content_kind=r.chunk.chunk_metadata.content_kind,
                 content=r.chunk.content,
                 score=r.bm25_score,
             )

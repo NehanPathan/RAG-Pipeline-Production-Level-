@@ -52,6 +52,15 @@ dependencies = [
     # conflict as previously assumed here.
     "pdf2image>=1.17.0",
 
+    # Reads a PDF's own text layer, which is the only way to tell a drawing
+    # plotted from CAD from a scan of one: Docling OCRs a scanned page
+    # internally and returns the result as ordinary text, so by the time the
+    # pipeline sees it the two are identical. See
+    # src/ingestion/parsing/drawing_detector.py. Already resolved
+    # transitively via docling; declared because we import it directly.
+    # BSD-3, pure Python, no system libraries.
+    "pypdf>=5.0",
+
     # CAD. ezdxf reads DXF natively (MIT, cp312 wheels for Windows and
     # manylinux, pure-Python fallback). It cannot read DWG -- that needs the
     # ODA File Converter, which the operator installs themselves because

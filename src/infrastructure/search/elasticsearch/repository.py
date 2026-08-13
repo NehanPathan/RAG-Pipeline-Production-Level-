@@ -40,6 +40,7 @@ INDEX_MAPPINGS: dict[str, Any] = {
             "parent_chunk_id": {"type": "keyword"},
             "sensitivity": {"type": "keyword"},
             "entity_canonicals": {"type": "keyword"},
+            "content_kind": {"type": "keyword"},
             "project_id": {"type": "keyword"},
             "project_number": {"type": "keyword"},
             "drawing_id": {"type": "keyword"},
@@ -276,6 +277,8 @@ class ElasticsearchSearchRepository(SearchRepository):
             clauses.append({"terms": {"entity_canonicals": filters.entity_canonicals}})
         if filters.drawing_numbers:
             clauses.append({"terms": {"drawing_number": filters.drawing_numbers}})
+        if filters.content_kinds:
+            clauses.append({"terms": {"content_kind": filters.content_kinds}})
         if filters.sensitivity_in is not None:
             # Mirrors the Qdrant filter: documents indexed before the field
             # existed have no `sensitivity` and must not vanish from results

@@ -66,6 +66,14 @@ class TestDenormalizedColumns:
             "is_latest",
         } <= columns
 
+    async def test_chunks_record_how_their_text_was_obtained(self, session_factory):
+        """Migration 0007. Same reason as 0004: the search payload carries
+        `content_kind`, so without a column here the first reindex from
+        Postgres silently erases it from both backends."""
+        columns = await _columns(session_factory, "document_chunks")
+
+        assert "content_kind" in columns
+
 
 class TestRevisionConstraint:
     async def test_only_one_current_revision_per_drawing(self, session_factory):

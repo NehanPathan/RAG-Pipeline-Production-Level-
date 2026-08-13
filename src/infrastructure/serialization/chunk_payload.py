@@ -57,6 +57,9 @@ def chunk_to_payload(chunk: DocumentChunk) -> dict[str, Any]:
         # indexing nested objects per chunk would cost far more than it
         # returns.
         "entity_canonicals": _entity_canonicals(chunk),
+        # Provenance quality: filterable so "only chunks read from CAD" is a
+        # query rather than a guess.
+        "content_kind": chunk.chunk_metadata.content_kind,
     }
 
 
@@ -100,6 +103,7 @@ def payload_to_chunk(payload: Mapping[str, Any], chunk_id: uuid.UUID) -> Documen
                 {"canonical": canonical}
                 for canonical in (payload.get("entity_canonicals") or [])
             ],
+            content_kind=payload.get("content_kind"),
         ),
         user_id=_optional_uuid(payload.get("user_id")),
         domain=payload.get("domain"),

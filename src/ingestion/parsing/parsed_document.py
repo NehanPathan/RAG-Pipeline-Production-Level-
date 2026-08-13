@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from src.ingestion.layout.models import DocumentLayout
 from src.ingestion.loaders.base import RawDocument
 from src.ingestion.ocr.models import OCRMetadata
+from src.ingestion.parsing.drawing_detector import ContentClassification, ContentKind
 
 
 @dataclass
@@ -17,7 +18,22 @@ class ParsedDocument:
     raw: RawDocument
     ocr_metadata: OCRMetadata
     layout: DocumentLayout
+    #: Whether this is a drawing or prose, and whether its text was scanned.
+    #: Lives here rather than on `RawDocument` on purpose: `RawDocument` is
+    #: the loaders' output contract, and a loader cannot answer this -- the
+    #: question is only decidable once the file and the extracted text can be
+    #: compared. Defaults to prose so every existing construction site,
+    #: including the ones in tests, keeps its current behaviour.
+    classification: ContentClassification = field(
+        default_factory=lambda: ContentClassification(
+            kind=ContentKind.PROSE, reason="not classified"
+        )
+    )
 
     @property
     def full_text(self) -> str:
         return self.raw.full_text
+
+    @property
+    def content_kind(self) -> ContentKind:
+        return self.classification.kind

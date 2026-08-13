@@ -13,9 +13,10 @@ from src.monitoring.logger import get_logger
 
 logger = get_logger(__name__)
 
-# Loaders whose output is a raster image rather than a text layer. When OCR
-# ran on one of these, the document is a scan of a drawing or photograph and
-# is validated against the lower OCR confidence floor.
+# Loaders whose output is a raster image rather than a text layer. Retained
+# only as a fallback for ParsedDocuments built outside DocumentParsingService
+# and therefore carrying no classification; the real decision is now made
+# from content (see `_is_drawing`).
 _DRAWING_LOADERS = frozenset({"image_passthrough"})
 
 
@@ -76,6 +77,12 @@ class HybridChunkingPipeline:
 
         self._attach_entities(all_chunks)
 
+        # Stamp provenance quality on every chunk, so a retrieved measurement
+        # can be told apart from an OCR'd one at answer time.
+        kind = parsed_document.classification.kind.value
+        for chunk in all_chunks:
+            chunk.chunk_metadata.content_kind = kind
+
         ocr_metadata = parsed_document.ocr_metadata
         ocr_confidence = ocr_metadata.confidence if ocr_metadata.ran else None
         result = self._validator.validate(
@@ -114,12 +121,25 @@ class HybridChunkingPipeline:
 
         Engineering drawings scan far worse than prose -- rotated dimension
         text, hatching and leader lines drag the mean down -- so a document
-        whose text came wholly from OCR of an image gets the lower floor. A
-        scanned PDF report still has the standard floor, because its text is
-        laid out as prose and should OCR cleanly.
+        whose text came from OCR of a drawing gets the lower floor. A scanned
+        prose report keeps the standard floor: it is laid out as prose and
+        should OCR cleanly, so a low score there is a genuine problem.
+
+        This asks the content classifier rather than the loader name. Keying
+        off the loader meant only an uploaded image ever qualified, and a
+        drawing exported to PDF -- which is how drawings actually arrive --
+        loads through Docling like any report and was held to the prose
+        floor. That is the same failure as the original bug: the drawings
+        most in need of the lower floor were the ones that never got it.
         """
-        loader = parsed_document.raw.loader_name
-        return parsed_document.ocr_metadata.ran and loader in _DRAWING_LOADERS
+        if not parsed_document.ocr_metadata.ran:
+            return False
+        if parsed_document.classification.kind.is_drawing:
+            return True
+        # Fallback for callers that build a ParsedDocument without running it
+        # through DocumentParsingService, which leaves the classification at
+        # its default.
+        return parsed_document.raw.loader_name in _DRAWING_LOADERS
 
     def _table_chunk(self, document_id: uuid.UUID, segment: SemanticSegment, position: int) -> DocumentChunk:
         content = f"Table:\n{segment.text}"

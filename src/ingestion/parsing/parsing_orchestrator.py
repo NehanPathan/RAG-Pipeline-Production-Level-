@@ -9,6 +9,7 @@ from src.ingestion.loaders.base import BoundingBox, RawDocument, TextBlock
 from src.ingestion.ocr.base import OCRProvider
 from src.ingestion.ocr.detector import OCRDetector
 from src.ingestion.ocr.models import OCRMetadata, OCRPageResult, OCRResult, OCRWord
+from src.ingestion.parsing.drawing_detector import ContentClassification, DrawingContentDetector
 from src.ingestion.parsing.parsed_document import ParsedDocument
 from src.monitoring.logger import get_logger
 
@@ -92,11 +93,13 @@ class DocumentParsingService:
         ocr_provider: OCRProvider,
         labeled_analyzer: LayoutAnalyzer,
         heuristic_analyzer: LayoutAnalyzer,
+        content_detector: DrawingContentDetector | None = None,
     ) -> None:
         self._ocr_detector = ocr_detector
         self._ocr_provider = ocr_provider
         self._labeled_analyzer = labeled_analyzer
         self._heuristic_analyzer = heuristic_analyzer
+        self._content_detector = content_detector or DrawingContentDetector()
 
     async def process(
         self,
@@ -105,7 +108,13 @@ class DocumentParsingService:
         file_type: str,
         language: str = "en",
     ) -> ParsedDocument:
-        decision = self._ocr_detector.detect(raw_document, file_type)
+        # Classify before deciding on OCR, not after: whether the file has a
+        # text layer of its own is one of the inputs to that decision, and it
+        # stops being observable the moment OCR text is merged in.
+        classification = self._content_detector.classify(raw_document, file_path, file_type)
+        decision = self._ocr_detector.detect(
+            raw_document, file_type, has_native_text_layer=classification.has_native_text_layer
+        )
 
         if decision.required:
             logger.info(
@@ -114,19 +123,56 @@ class DocumentParsingService:
                 reason=decision.reason,
                 pages=decision.pages_required or "all",
             )
-            ocr_result = await self._ocr_provider.recognize(
-                file_path, language=language, pages=decision.pages_required or None
-            )
+            try:
+                ocr_result = await self._ocr_provider.recognize(
+                    file_path, language=language, pages=decision.pages_required or None
+                )
+            except Exception as exc:
+                # OCR needs system binaries (tesseract, poppler) that are
+                # present in our image but not guaranteed on every host. When
+                # the loader already extracted usable text -- which is the
+                # case for every scanned PDF Docling OCR'd internally -- that
+                # text is worth keeping: losing the whole document is worse
+                # than losing the confidence scores and word geometry that
+                # our own OCR pass would have added.
+                #
+                # This branch only became reachable for scanned PDFs when
+                # they started being routed to OCR at all. Failing them hard
+                # would have made this fix a regression on any deployment
+                # without poppler.
+                if not raw_document.full_text.strip():
+                    raise
+                logger.warning(
+                    "ocr_failed_keeping_extracted_text",
+                    file=str(file_path),
+                    error=str(exc),
+                    words_kept=raw_document.word_count,
+                )
+                ocr_metadata = OCRMetadata.skipped(reason=f"OCR failed: {exc}")
+                return self._finish(raw_document, ocr_metadata, classification)
+
             raw_document = self._merge_ocr_result(raw_document, ocr_result)
             ocr_metadata = OCRMetadata.from_result(ocr_result)
         else:
             logger.info("ocr_skipped", file=str(file_path), reason=decision.reason)
             ocr_metadata = OCRMetadata.skipped(reason=decision.reason)
 
+        return self._finish(raw_document, ocr_metadata, classification)
+
+    def _finish(
+        self,
+        raw_document: RawDocument,
+        ocr_metadata: OCRMetadata,
+        classification: ContentClassification,
+    ) -> ParsedDocument:
         analyzer = self._select_layout_analyzer(raw_document)
         layout = analyzer.analyze(raw_document)
-
-        return ParsedDocument(raw=raw_document, ocr_metadata=ocr_metadata, layout=layout)
+        return ParsedDocument(
+            raw=raw_document,
+            ocr_metadata=ocr_metadata,
+            layout=layout,
+            classification=classification,
+        )
 
     def _merge_ocr_result(self, raw_document: RawDocument, ocr_result: OCRResult) -> RawDocument:
         """Replaces the loader's text_blocks *only for the pages OCR actually

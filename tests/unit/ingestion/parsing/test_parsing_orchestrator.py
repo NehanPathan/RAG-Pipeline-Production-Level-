@@ -8,7 +8,9 @@ from src.ingestion.layout.labeled_layout_analyzer import LabeledLayoutAnalyzer
 from src.ingestion.loaders.base import BoundingBox, RawDocument, TextBlock
 from src.ingestion.ocr.detector import OCRDetector
 from src.ingestion.ocr.models import OCRPageResult, OCRResult, OCRWord
+from src.ingestion.parsing.drawing_detector import ContentKind
 from src.ingestion.parsing.parsing_orchestrator import DocumentParsingService
+from tests.unit.ingestion.conftest import DRAWING_LINES, PROSE_TEXT
 
 
 def _service(ocr_provider=None, min_words_per_page=10.0) -> DocumentParsingService:
@@ -268,3 +270,116 @@ async def test_text_native_extension_never_triggers_ocr():
 
     ocr_provider.recognize.assert_not_called()
     assert parsed.ocr_metadata.skipped_reason is not None
+
+
+# --- Drawing PDFs ----------------------------------------------------------
+#
+# Exported CAD drawings arrive as PDFs far more often than as DXF, and the
+# service is where the two questions about them get answered: is this a
+# drawing, and did its text come from the file or from an OCR engine. Both
+# fixtures below are real PDFs (see conftest.py) because the second question
+# is only answerable by reading the file -- Docling's output is identical
+# either way.
+
+
+async def _parse(pdf_path, blocks, ocr_provider=None):
+    service = _service(ocr_provider=ocr_provider or AsyncMock())
+    raw = RawDocument(
+        file_path=pdf_path,
+        file_name=pdf_path.name,
+        mime_type="application/pdf",
+        text_blocks=[TextBlock(text=line, page_number=1) for line in blocks],
+        page_count=1,
+        word_count=sum(len(line.split()) for line in blocks),
+    )
+    return await service.process(raw, pdf_path, file_type="pdf")
+
+
+async def test_vector_drawing_pdf_is_classified_without_running_ocr(drawing_pdfs):
+    """Text plotted from CAD is already text -- OCR would only degrade it."""
+    ocr_provider = AsyncMock()
+
+    parsed = await _parse(drawing_pdfs["vector"], DRAWING_LINES, ocr_provider)
+
+    ocr_provider.recognize.assert_not_called()
+    assert parsed.content_kind is ContentKind.VECTOR_DRAWING
+    assert parsed.classification.has_native_text_layer is True
+
+
+async def test_scanned_drawing_pdf_is_ocred_despite_looking_text_rich(drawing_pdfs):
+    """The gap this closes.
+
+    Docling OCRs the scan internally and returns ~60 words, so the density
+    check saw a healthy page and skipped OCR. Those words carried no
+    confidence and no coordinates, which left the chunk validator judging a
+    drawing by a number it did not have and highlighting with no geometry.
+    """
+    ocr_provider = AsyncMock()
+    ocr_provider.recognize.return_value = OCRResult(
+        engine="tesseract",
+        language="en",
+        pages=[
+            OCRPageResult(
+                page_number=1,
+                text="DRAWING NO: S-104",
+                confidence=0.28,
+                words=[
+                    OCRWord(text="DRAWING", confidence=0.3, bbox=BoundingBox(10, 10, 60, 20)),
+                    OCRWord(text="NO:", confidence=0.25, bbox=BoundingBox(62, 10, 80, 20)),
+                    OCRWord(text="S-104", confidence=0.29, bbox=BoundingBox(82, 10, 120, 20)),
+                ],
+            )
+        ],
+    )
+
+    parsed = await _parse(drawing_pdfs["scanned"], DRAWING_LINES, ocr_provider)
+
+    ocr_provider.recognize.assert_called_once()
+    assert parsed.content_kind is ContentKind.SCANNED_DRAWING
+    assert parsed.classification.has_native_text_layer is False
+    # The two things Docling's internal OCR never surfaced.
+    assert parsed.ocr_metadata.confidence == pytest.approx(0.28)
+    assert any(block.bbox is not None for block in parsed.raw.text_blocks)
+
+
+async def test_a_prose_specification_is_unaffected(drawing_pdfs):
+    """The control. Nothing about the ordinary path may change."""
+    ocr_provider = AsyncMock()
+
+    parsed = await _parse(drawing_pdfs["prose"], [PROSE_TEXT] * 3, ocr_provider)
+
+    ocr_provider.recognize.assert_not_called()
+    assert parsed.content_kind is ContentKind.PROSE
+    assert parsed.ocr_metadata.ran is False
+
+
+async def test_a_failed_ocr_keeps_the_text_the_loader_already_extracted(drawing_pdfs):
+    """OCR needs system binaries that not every host has.
+
+    Routing scanned PDFs to OCR made this path reachable for documents that
+    previously ingested fine, so a missing poppler or tesseract must not turn
+    the fix into a regression. The confidence scores and word geometry are
+    lost; the document is not.
+    """
+    ocr_provider = AsyncMock()
+    ocr_provider.recognize.side_effect = RuntimeError("Is poppler installed and in PATH?")
+
+    parsed = await _parse(drawing_pdfs["scanned"], DRAWING_LINES, ocr_provider)
+
+    ocr_provider.recognize.assert_called_once()
+    assert parsed.ocr_metadata.ran is False
+    assert "OCR failed" in (parsed.ocr_metadata.skipped_reason or "")
+    assert "DRAWING NO: S-104" in parsed.full_text
+    # Still known to be a scanned drawing -- the classification does not
+    # depend on OCR having succeeded.
+    assert parsed.content_kind is ContentKind.SCANNED_DRAWING
+
+
+async def test_a_failed_ocr_on_a_document_with_no_text_still_raises(drawing_pdfs):
+    """Nothing to fall back to. Silently indexing an empty document is worse
+    than reporting the failure."""
+    ocr_provider = AsyncMock()
+    ocr_provider.recognize.side_effect = RuntimeError("tesseract is not installed")
+
+    with pytest.raises(RuntimeError, match="tesseract"):
+        await _parse(drawing_pdfs["scanned"], [], ocr_provider)

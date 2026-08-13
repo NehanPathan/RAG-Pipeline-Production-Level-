@@ -135,6 +135,13 @@ class ChunkMetadata:
     # chunks mention ISMB 300" into an exact keyword filter rather than a
     # semantic guess.
     entities: list[dict[str, Any]] = field(default_factory=list)
+    # How this chunk's text was obtained: "prose", "vector_drawing",
+    # "scanned_drawing", "scanned_prose" or "cad_native". Carried through to
+    # both search backends because it is the difference between a dimension
+    # that is the CAD value and one that is OCR's reading of a plotted
+    # string -- an answer quoting a measurement should be able to say which.
+    # See src/ingestion/parsing/drawing_detector.py.
+    content_kind: str | None = None
 
 
 @dataclass

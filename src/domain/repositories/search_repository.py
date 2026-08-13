@@ -34,6 +34,9 @@ class BM25SearchFilter:
     # is invisible to it.
     entity_canonicals: list[str] | None = None
     drawing_numbers: list[str] | None = None
+    # Restrict to a provenance class -- e.g. only chunks read from CAD, where
+    # dimensions are exact rather than OCR'd off a plotted sheet.
+    content_kinds: list[str] | None = None
 
 
 @dataclass

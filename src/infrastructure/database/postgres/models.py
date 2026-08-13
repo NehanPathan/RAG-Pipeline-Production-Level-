@@ -324,6 +324,12 @@ class DocumentChunkModel(Base):
     revision_label: Mapped[str | None] = mapped_column(String(16))
     is_latest: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
+    # How the text was obtained -- see ContentKind. A column rather than a
+    # payload-only field because `scripts/reindex_chunks.py` rebuilds both
+    # search backends from Postgres, and anything without a system of record
+    # here is silently erased by a reindex.
+    content_kind: Mapped[str | None] = mapped_column(String(32))
+
     document: Mapped[DocumentModel] = relationship("DocumentModel", back_populates="chunks")
 
 
