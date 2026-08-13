@@ -19,6 +19,7 @@ from src.api.dependencies import (
 from src.api.dependencies_rate_limit import rate_limit_role
 from src.config import get_settings
 from src.domain.entities.document import Document, DocumentChunk
+from src.domain.repositories.blob_store import BlobTooLargeError, document_key
 from src.domain.value_objects.document_intelligence import DocumentIntelligenceSummary
 from src.domain.value_objects.sensitivity import Sensitivity
 from src.governance.audit import AuditAction, AuditOutcome
@@ -26,6 +27,7 @@ from src.governance.audit import record as audit_record
 from src.governance.policy import get_policy
 from src.governance.rbac import Principal, Role, get_principal, require_role
 from src.governance.runtime_flags import get_flags
+from src.infrastructure.storage import get_blob_store
 from src.ingestion.pipeline import IngestionPipeline
 from src.monitoring.logger import get_logger
 from src.monitoring.prometheus_metrics import access_denied, documents_ingested
@@ -122,6 +124,12 @@ class DocumentIntelligenceResponse(BaseModel):
     created_at: str | None
 
 
+
+async def _iter_upload(file: UploadFile, chunk_size: int = 1024 * 1024):
+    """Yield the upload in chunks so it is never held whole in memory."""
+    while chunk := await file.read(chunk_size):
+        yield chunk
+
 @router.post("/documents", response_model=UploadResponse, status_code=http_status.HTTP_202_ACCEPTED)
 async def upload_document(
     background_tasks: BackgroundTasks,
@@ -177,25 +185,45 @@ async def upload_document(
             detail=f"File type '{file_ext}' is not supported. Allowed: {settings.allowed_file_types}",
         )
 
-    # Validate file size
-    content = await file.read()
-    if len(content) > settings.max_file_size_bytes:
-        raise HTTPException(
-            status_code=http_status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"File size exceeds maximum of {settings.max_file_size_mb}MB",
-        )
-
-    # Save to temp location
-    file_path = UPLOAD_DIR / f"{uuid.uuid4()}_{file.filename}"
-    file_path.write_bytes(content)
-
+    # Stream to durable storage, enforcing the size limit as it goes.
+    #
+    # The previous code read the whole upload into memory and checked its
+    # size afterwards, so `max_file_size_bytes` bounded what was *accepted*
+    # but not what a request could *allocate* -- a 2 GB upload was a 2 GB
+    # allocation regardless of the limit. Enforcing mid-stream makes the
+    # limit bound both.
     document = Document(
         file_name=file.filename or "unnamed",
         file_type=file_ext,
-        file_size_bytes=len(content),
+        file_size_bytes=0,
         user_id=principal.user_id,
-        file_path=str(file_path),
     )
+    blob_store = get_blob_store(settings)
+    key = document_key(str(document.id), file.filename or "unnamed")
+    try:
+        stored = await blob_store.put_stream(
+            key,
+            _iter_upload(file),
+            content_type=file.content_type or "application/octet-stream",
+            max_bytes=settings.max_file_size_bytes,
+        )
+    except BlobTooLargeError:
+        raise HTTPException(
+            status_code=http_status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"File size exceeds maximum of {settings.max_file_size_mb}MB",
+        ) from None
+
+    document.file_size_bytes = stored.size_bytes
+    document.file_path = stored.key
+
+    # Ingestion needs a real path: Docling, ezdxf, pdf2image and Tesseract all
+    # take filenames, not streams. The blob is the durable copy; this is a
+    # working copy that the pipeline reads and the caller deletes.
+    file_path = UPLOAD_DIR / f"{document.id}_{file.filename}"
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    with file_path.open("wb") as handle:
+        async for chunk in blob_store.get_stream(stored.key):
+            handle.write(chunk)
     document.classify(classification, retention_days=policy.retention_days)
     if domain:
         document.metadata.domain = domain

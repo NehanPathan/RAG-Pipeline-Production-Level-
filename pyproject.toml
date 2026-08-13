@@ -60,6 +60,11 @@ dependencies = [
     "ezdxf>=1.3,<2",
     "matplotlib>=3.9",
 
+    # Object storage. S3-compatible, so one code path covers MinIO for dev
+    # and on-prem and real S3 in cloud. Pins botocore transitively -- worth
+    # re-checking on every lock bump.
+    "aioboto3>=13.2",
+
     # Embeddings / Reranking
     "openai>=1.56.0",
     "sentence-transformers>=3.3.0",

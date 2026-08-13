@@ -118,6 +118,29 @@ class Settings(BaseSettings):
     # Where DWG->DXF output and other derived artifacts are written.
     derived_assets_dir: str = "./uploads/derived"
 
+    # Object storage (src/infrastructure/storage/).
+    #
+    # Originals previously went to a local directory that docker-compose did
+    # not mount as a volume, so every container restart destroyed them while
+    # the database still listed the documents as indexed. `local` remains the
+    # default because it needs nothing running, but it now means a real
+    # implementation of the port with a volume behind it.
+    #
+    # `s3` covers MinIO and real S3 through the same code path, which is what
+    # lets a practice that cannot let drawings leave its network run this
+    # unchanged.
+    blob_store_provider: str = "local"  # local | s3
+    blob_local_root: str = "./uploads/blobs"
+    blob_bucket: str = "steel-documents"
+    blob_endpoint_url: str = ""  # e.g. http://minio:9000; empty means real AWS
+    blob_region: str = "us-east-1"
+    blob_access_key_id: str = ""
+    blob_secret_access_key: str = ""
+    # MinIO addresses buckets by path; a hostname-style request to it fails in
+    # a way that reads like a missing bucket.
+    blob_use_path_style: bool = True
+    blob_multipart_threshold_bytes: int = 8 * 1024 * 1024
+
     # Reranking
     reranker_provider: str = "bge"
     bge_reranker_model: str = "BAAI/bge-reranker-large"
