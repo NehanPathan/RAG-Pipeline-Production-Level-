@@ -127,9 +127,7 @@ class PostgresProjectRepository(ProjectRepository):
     async def member_project_ids(self, user_id: uuid.UUID) -> list[uuid.UUID]:
         async with self._session_factory() as session:
             result = await session.execute(
-                select(ProjectMemberModel.project_id).where(
-                    ProjectMemberModel.user_id == user_id
-                )
+                select(ProjectMemberModel.project_id).where(ProjectMemberModel.user_id == user_id)
             )
             return list(result.scalars().all())
 
@@ -179,6 +177,20 @@ class PostgresDrawingRepository(DrawingRepository):
         async with self._session_factory() as session:
             model = await session.get(DrawingModel, drawing_id)
             return _to_drawing(model) if model else None
+
+    async def list_for_project(self, project_id: uuid.UUID) -> list[Drawing]:
+        """The drawing register for one project.
+
+        Ordered by drawing number then sheet, which is how a register is
+        read on paper. One row per drawing, not per revision.
+        """
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(DrawingModel)
+                .where(DrawingModel.project_id == project_id)
+                .order_by(DrawingModel.drawing_number, DrawingModel.sheet_number)
+            )
+            return [_to_drawing(model) for model in result.scalars().all()]
 
     async def current_revision_id(self, drawing_id: uuid.UUID) -> uuid.UUID | None:
         async with self._session_factory() as session:

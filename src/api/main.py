@@ -23,6 +23,7 @@ from src.api.routes import (
     feedback,
     governance,
     health,
+    projects,
     retrieval,
     search,
 )
@@ -180,6 +181,7 @@ def create_app() -> FastAPI:
     app.include_router(chat.router, prefix="/api/v1", tags=["Chat"])
     app.include_router(conversations.router, prefix="/api/v1", tags=["Conversations"])
     app.include_router(retrieval.router, prefix="/api/v1", tags=["Retrieval"])
+    app.include_router(projects.router, prefix="/api/v1", tags=["Projects"])
     app.include_router(search.router, prefix="/api/v1", tags=["Search"])
     app.include_router(evaluation.router, prefix="/api/v1", tags=["Evaluation"])
     app.include_router(feedback.router, prefix="/api/v1", tags=["Feedback"])

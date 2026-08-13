@@ -67,6 +67,15 @@ class DrawingRepository(ABC):
     async def get_by_id(self, drawing_id: uuid.UUID) -> Drawing | None: ...
 
     @abstractmethod
+    async def list_for_project(self, project_id: uuid.UUID) -> list[Drawing]:
+        """The drawing register for one project: one row per drawing.
+
+        Not per document -- `S-104` appears once however many revisions of
+        it exist, which is the distinction the drawings table exists for.
+        """
+        ...
+
+    @abstractmethod
     async def current_revision_id(self, drawing_id: uuid.UUID) -> uuid.UUID | None: ...
 
     @abstractmethod
