@@ -157,7 +157,11 @@ services:
         condition: service_started
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/healthz"]
+      # 127.0.0.1, not localhost: the container resolves `localhost` to ::1
+      # as well as 127.0.0.1, and busybox wget tries ::1 first. nginx now
+      # binds both, but naming the address here means the check cannot be
+      # broken again by a listen directive it does not control.
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/healthz"]
       interval: 30s
       timeout: 5s
       retries: 3
