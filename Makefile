@@ -9,6 +9,9 @@ help:
 	@echo "  make build        Build Docker images"
 	@echo "  make frontend     Rebuild and restart just the React frontend"
 	@echo "  make test         Run test suite with coverage"
+	@echo "  make test-frontend Run the React app's Vitest suite"
+	@echo "  make test-layout  Browser layout checks (Playwright)"
+	@echo "  make test-visual  Screenshot comparison (Playwright)"
 	@echo "  make lint         Run ruff linter"
 	@echo "  make type-check   Run mypy type checker"
 	@echo "  make migrate      Run Alembic database migrations"
@@ -17,6 +20,7 @@ help:
 	@echo "  make stop         Stop all services"
 	@echo "  make clean        Remove containers, volumes, and cache"
 	@echo "  make install      Install Python dependencies with uv"
+	@echo "  make ui-debug     Interim Streamlit UI, for poking the API by hand"
 	@echo ""
 	@echo "Governance (GM3):"
 	@echo "  make governance-check    Validate risk register vs metrics, controls, alerts"
@@ -100,12 +104,34 @@ test-e2e:
 test-cov:
 	uv run pytest tests/ --cov=src --cov-report=html --cov-report=term-missing
 
+# The React app's own suite. Vitest + Testing Library, jsdom, all API calls
+# mocked -- no backend, no database, no Docker needed to run it.
+test-frontend:
+	cd frontend && npm test
+
+typecheck-frontend:
+	cd frontend && npx tsc --noEmit
+
+# Browser-level layout checks. Measures real boxes in a real Chromium against
+# the built bundle -- the class of defect jsdom cannot see, because it has no
+# layout engine at all.
+test-layout:
+	cd frontend && npm run test:layout
+
+# Screenshot comparison. Baselines are per-platform; regenerate with
+# `npm run test:visual:update` after an intentional design change.
+test-visual:
+	cd frontend && npm run test:visual
+
 api:
 	uv run uvicorn src.api.main:app --reload --host 0.0.0.0 --port 8000
 
-ui:
+# The interim Streamlit UI, kept for poking the API by hand. The product UI
+# is the React app under frontend/ -- `docker compose up frontend`, or
+# `npm run dev` in that directory.
+ui-debug:
 	uv run streamlit run src/ui/app.py --server.port 8501
 
-ci: lint-check type-check test governance-check
+ci: lint-check type-check test governance-check typecheck-frontend test-frontend test-layout
 
 .DEFAULT_GOAL := help

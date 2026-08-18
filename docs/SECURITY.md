@@ -1,8 +1,16 @@
 # Security — Everything, In One Place
 
 *How this system is secured, explained simply. Covers both sides: the FastAPI
-backend and the Streamlit UI. Every control here is real code you can go and
+backend and the browser UI. Every control here is real code you can go and
 read — file paths are given throughout.*
+
+> **Which UI this means.** The product UI is the React app under `frontend/`
+> (`docker compose up frontend`). The Streamlit app under `src/ui/` is the
+> interim UI that proved the API before any React existed; it is now gated
+> behind the `debug` compose profile and does not start by default. Both are
+> thin clients over the same FastAPI service, so every backend control below
+> applies identically to either. Where the two differ is only in *how the
+> browser obtains a token*, and both paths are described in §3.
 
 ---
 
@@ -19,7 +27,7 @@ read — file paths are given throughout.*
 9. [The audit trail](#9-the-audit-trail)
 10. [Container security](#10-container-security)
 11. [Principles we followed everywhere](#11-principles-we-followed-everywhere)
-12. [Streamlit-specific security](#12-streamlit-specific-security)
+12. [Streamlit-specific security](#12-streamlit-specific-security) *(interim UI)*
 13. [FastAPI-specific security](#13-fastapi-specific-security)
 14. [What is NOT protected](#14-what-is-not-protected)
 15. [Pre-deployment checklist](#15-pre-deployment-checklist)
@@ -100,7 +108,60 @@ checks that signature. If the signature is genuine, we know who they are.
 The key insight: **we don't store passwords at all.** Firebase does. We only
 check signatures.
 
-### How Streamlit signs users in
+### Password policy — configured in Firebase, not here
+
+**This application does not enforce a password policy, because it never sees a
+password.** There is no sign-up flow: the only credential call in the codebase
+is `signInWithPassword`, which hands the email and password straight to
+Firebase and gets back a token. The `hashed_password` column on `users` is a
+leftover and is never populated. The backend only *verifies* tokens.
+
+So the strength rule has exactly one enforcement point, and it is not code we
+own:
+
+> **Firebase Console → Authentication → Settings → Password policy**
+>
+> * Enforcement: *Require enforcement* (the default is *Off*, which permits
+>   any password of six characters or more).
+> * Minimum length: 6–30. Set it deliberately; the default of 6 is weak.
+> * Character requirements: uppercase, lowercase, numeric and special are
+>   independent toggles.
+> * *Force upgrade on sign-in* makes existing users with a non-compliant
+>   password reset it at their next sign-in.
+
+Two things follow, and both are deliberate:
+
+**We do not validate password strength in the sign-in form.** Validating on
+sign-in is not a control, it is a lockout: the password already exists, so a
+client-side rule can only refuse a user whose valid password predates the
+rule, while doing nothing to stop a weak one being *created* — which happens
+in Firebase, elsewhere. A strength meter belongs on a sign-up or reset form,
+and this application has neither.
+
+**A local validator would be a false claim.** Writing one would let this
+document say "the application enforces a strong password policy" while the
+actual enforcement point sat switched off in a console nobody had opened. If
+the policy is not configured above, it is not configured.
+
+If registration should move into this application, that is a feature — a
+sign-up route, a reset flow and a shared validator — not a fix to the code
+described here.
+
+### How the React app signs users in
+
+The browser calls Firebase's REST sign-in endpoint directly and holds the
+resulting token in memory, refreshing it before each request rather than only
+at mount — a token that expired mid-session used to surface as "Could not
+reach the answering service".
+
+**File: `frontend/src/api/client.ts`** (`freshAuthHeaders`)
+
+The Firebase **web API key** is inlined into the bundle at build time and is
+meant to be public: it identifies the project, it does not authorise anything.
+What authorises is the signed token, and only the backend verifies that. The
+service account never leaves the API container.
+
+### How Streamlit signs users in (interim UI, `--profile debug`)
 
 Streamlit runs on the *server*, so it can't use Firebase's JavaScript library —
 there's no browser to run it in. So we call Firebase's REST API directly.
@@ -610,7 +671,7 @@ card rather than glossed over.
 
 | | Web API Key | Service Account JSON |
 |---|---|---|
-| Used by | Browser / Streamlit | Backend only |
+| Used by | Browser (React or Streamlit) | Backend only |
 | Purpose | Ask Firebase to sign a user in | **Verify** tokens |
 | Secret? | **No** | **Yes — critically** |
 | If leaked | Very little | Attacker can mint a token for **any user** |

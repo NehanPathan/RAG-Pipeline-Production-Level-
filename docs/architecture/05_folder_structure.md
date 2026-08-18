@@ -254,7 +254,7 @@ prod_rag/
 │   │   ├── prometheus_metrics.py
 │   │   └── logger.py                 ← structlog setup
 │   │
-│   └── ui/                           ← Streamlit application
+│   └── ui/                           ← Streamlit UI (interim; --profile debug)
 │       ├── __init__.py
 │       ├── app.py                    ← Streamlit entry point
 │       ├── pages/
@@ -299,9 +299,20 @@ prod_rag/
 │       ├── test_chat_flow.py
 │       └── test_document_lifecycle.py
 │
+├── frontend/                         ← React/Vite app (the product UI)
+│   ├── src/
+│   │   ├── api/                      ← typed client over the FastAPI routes
+│   │   ├── pages/                    ← ask, documents, drawings, ingest,
+│   │   │                               login, ops-* (governance, quality,
+│   │   │                               inspector, monitoring, access,
+│   │   │                               settings)
+│   │   └── components/
+│   └── vite.config.ts
+│
 ├── docker/
 │   ├── api.Dockerfile
-│   ├── streamlit.Dockerfile
+│   ├── frontend.Dockerfile
+│   ├── streamlit.Dockerfile          ← interim UI, profile-gated
 │   └── nginx.conf                    ← Reverse proxy config
 │
 ├── scripts/
@@ -329,5 +340,5 @@ prod_rag/
 | Separate `domain/repositories/` (abstract) from `infrastructure/` (concrete) | Clean Architecture: domain never imports infrastructure |
 | `pipeline.py` as orchestrator per domain | Single entry point per pipeline, easy to test |
 | `providers/base.py` ABCs in `ingestion/`, `llm/`, `retrieval/` | Swap providers without touching business logic |
-| `ui/api_client.py` as thin HTTP wrapper | Streamlit calls FastAPI — no shared code between UI and backend |
+| `ui/api_client.py` as thin HTTP wrapper | Both UIs call FastAPI over HTTP — no shared code between UI and backend, so neither can drift into holding business logic |
 | `tests/` mirrors `src/` structure | Easy to find tests for any module |

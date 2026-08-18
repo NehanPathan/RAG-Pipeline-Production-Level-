@@ -47,6 +47,45 @@ jobs:
           file: coverage.xml
           fail_ci_if_error: false
 
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      # `ci` rather than `install`: it installs exactly the lockfile and fails
+      # if package.json has drifted from it, which is the point of running here
+      # rather than on a developer machine.
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npm test
+      # The tests mock at the `api` boundary, so a page can pass them and still
+      # fail to compile into a bundle. Building is what catches that.
+      - run: npm run build
+
+      # Browser-level layout checks against the built bundle.
+      #
+      # jsdom has no layout engine, so a whole class of defect is invisible to
+      # the suite above: the collapsed sidebar once rendered every link as a
+      # bare 16px glyph with no hit target and no active state, and unit tests,
+      # typecheck and build were all green throughout. These measure real boxes
+      # in a real browser and would have failed on it.
+      #
+      # `--project=layout` only. The `visual` project compares screenshots, and
+      # its baselines are per-platform: font rasterisation differs between
+      # Windows, macOS and Linux, so the committed Windows baselines cannot pass
+      # here. `e2e/sidebar.visual.spec.ts` documents how to add Linux ones if
+      # pixel diffing is wanted in CI too.
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:layout
+
   integration:
     name: Integration Tests
     runs-on: ubuntu-latest

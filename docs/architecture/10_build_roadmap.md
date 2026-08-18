@@ -134,6 +134,14 @@ into Phase 3 above. What's actually left:
 
 ## Phase 5: Streamlit UI (Week 9)
 
+> **Superseded.** This phase is left as written because it records what was
+> actually built and why. The Streamlit UI did its job -- it proved the API
+> surface before any React was written -- and the React app under
+> `frontend/` has since overtaken it on every page, adding drawings,
+> revisions, ingest and access management. Streamlit is now gated behind
+> the `debug` compose profile. See `docs/SECURITY.md` §3 for how each UI
+> obtains a token.
+
 ### Milestone: Functional UI covering all 5 pages
 
 **Tasks:**

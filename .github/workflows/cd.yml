@@ -43,18 +43,30 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Extract metadata (streamlit)
+      - name: Extract metadata (frontend)
         id: meta-ui
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository }}/streamlit
+          images: ghcr.io/${{ github.repository }}/frontend
 
-      - name: Build and push Streamlit image
+      # The React app is the product UI. It replaces the Streamlit image this
+      # step used to publish -- Streamlit was the interim UI that proved the
+      # API before any React existed, and the pipeline had never caught up:
+      # it was shipping the scaffold and not the product.
+      #
+      # The build args must match docker-compose.yml. `VITE_USE_MOCKS: false`
+      # is the one that matters: Vite inlines it, and a `true` build renders a
+      # convincing product full of drawings that do not exist.
+      - name: Build and push frontend image
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: docker/streamlit.Dockerfile
+          file: docker/frontend.Dockerfile
           push: true
+          build-args: |
+            VITE_USE_MOCKS=false
+            VITE_API_BASE=/api/v1
+            VITE_FIREBASE_API_KEY=${{ secrets.FIREBASE_WEB_API_KEY }}
           tags: ${{ steps.meta-ui.outputs.tags }}
           labels: ${{ steps.meta-ui.outputs.labels }}
           cache-from: type=gha

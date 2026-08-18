@@ -63,6 +63,8 @@ services:
       - ./frontend/vite.config.ts:/app/vite.config.ts
       - ./frontend/tsconfig.json:/app/tsconfig.json
 
+  # Still profile-gated in dev -- the override inherits `profiles` from the
+  # base file, so this only applies when `--profile debug` is passed.
   streamlit:
     environment:
       - API_BASE_URL=http://api:8000

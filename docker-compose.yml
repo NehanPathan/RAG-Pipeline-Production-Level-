@@ -169,19 +169,34 @@ services:
       timeout: 5s
       retries: 3
 
+  # The interim UI, kept for debugging the API directly and no longer started
+  # by default. It was built first deliberately -- to prove the endpoints
+  # before any React was written -- and the `frontend` service has since
+  # overtaken it on every page it has, adding drawings, revisions, ingest and
+  # access management on top. Two UIs racing to stay current is a cost with no
+  # return, but the Streamlit pages remain the quickest way to poke a new
+  # endpoint by hand, so they are gated rather than deleted.
+  #
+  #     docker compose --profile debug up streamlit
   streamlit:
+    profiles: ["debug"]
     build:
       context: .
       dockerfile: docker/streamlit.Dockerfile
     ports:
       - "18501:8501"
+    # Named individually rather than `env_file: .env`, which handed a UI
+    # container every secret in the project -- OpenAI, Anthropic, the JWT
+    # signing key, the Grafana password -- when it reads exactly these five.
+    # `FIREBASE_WEB_API_KEY` is the browser-side key and is meant to be
+    # public; the service account stays on the API, which is the only
+    # component that verifies tokens rather than obtaining them.
     environment:
       - API_BASE_URL=http://api:8000
-    # The UI reads FIREBASE_ENABLED, FIREBASE_WEB_API_KEY and
-    # FIREBASE_ALLOWED_DOMAINS from here to drive the sign-in form. It never
-    # sees the service account -- that stays on the API side, which is the
-    # only component that needs to *verify* tokens rather than obtain them.
-    env_file: .env
+      - FIREBASE_ENABLED=${FIREBASE_ENABLED:-false}
+      - FIREBASE_WEB_API_KEY=${FIREBASE_WEB_API_KEY:-}
+      - FIREBASE_ALLOWED_DOMAINS=${FIREBASE_ALLOWED_DOMAINS:-}
+      - STREAMLIT_PAGE_TITLE=${STREAMLIT_PAGE_TITLE:-Steel Document Intelligence}
     depends_on:
       - api
     restart: unless-stopped
