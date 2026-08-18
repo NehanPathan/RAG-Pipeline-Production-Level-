@@ -16,13 +16,42 @@ which is the opposite of what a governance layer needs.
 
 from __future__ import annotations
 
+import base64
 from collections.abc import AsyncIterator
 from typing import Any
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import BaseMessage, HumanMessage
 
-from src.llm.providers.base import LLMProvider
+from src.llm.providers.base import LLMProvider, VisionUnsupportedError
+
+#: Model families known to accept image input. Matched as substrings of the
+#: model id, because deployments name the same model a dozen ways
+#: (`gpt-4o`, `gpt-4o-2024-08-06`, an Azure deployment alias). A model missing
+#: from this list is treated as text-only, which costs a fallback rather than
+#: a failed request mid-answer -- and an operator can override it explicitly.
+_VISION_MODEL_HINTS = (
+    "gpt-4o",
+    "gpt-4.1",
+    "gpt-5",
+    "o3",
+    "o4",
+    "claude-3",
+    "claude-4",
+    "claude-opus",
+    "claude-sonnet",
+    "claude-haiku",
+    "gemini",
+    "llava",
+    "pixtral",
+    "qwen2-vl",
+    "qwen2.5-vl",
+)
+
+
+def _model_takes_images(model_id: str) -> bool:
+    lowered = model_id.lower()
+    return any(hint in lowered for hint in _VISION_MODEL_HINTS)
 
 
 def message_text(message: BaseMessage) -> str:
@@ -65,8 +94,13 @@ class LangChainChatProvider(LLMProvider):
     caller.
     """
 
-    def __init__(self, model: BaseChatModel, model_id: str) -> None:
+    def __init__(
+        self, model: BaseChatModel, model_id: str, supports_vision: bool | None = None
+    ) -> None:
         self._model = model
+        self._supports_vision = (
+            _model_takes_images(model_id) if supports_vision is None else supports_vision
+        )
         self._model_id = model_id
 
     @property
@@ -79,9 +113,7 @@ class LangChainChatProvider(LLMProvider):
         # building a new client each time.
         return self._model.bind(max_tokens=max_tokens, temperature=temperature)
 
-    async def complete(
-        self, prompt: str, max_tokens: int = 1024, temperature: float = 0.3
-    ) -> str:
+    async def complete(self, prompt: str, max_tokens: int = 1024, temperature: float = 0.3) -> str:
         response = await self._bound(max_tokens, temperature).ainvoke(
             [HumanMessage(content=prompt)]
         )
@@ -96,3 +128,37 @@ class LangChainChatProvider(LLMProvider):
             token = message_text(chunk)
             if token:
                 yield token
+
+    @property
+    def supports_vision(self) -> bool:
+        return self._supports_vision
+
+    async def describe_image(
+        self,
+        prompt: str,
+        image_png: bytes,
+        max_tokens: int = 512,
+        temperature: float = 0.0,
+    ) -> str:
+        """Send one image and one prompt as a multimodal message.
+
+        Uses LangChain's typed content blocks, which every multimodal chat
+        model in the registry accepts, so this stays one code path rather
+        than one per vendor -- the same reasoning that made this adapter
+        replace three hand-written providers.
+        """
+        if not self._supports_vision:
+            raise VisionUnsupportedError(self.model_id)
+
+        encoded = base64.b64encode(image_png).decode("ascii")
+        message = HumanMessage(
+            content=[
+                {"type": "text", "text": prompt},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/png;base64,{encoded}"},
+                },
+            ]
+        )
+        response = await self._bound(max_tokens, temperature).ainvoke([message])
+        return message_text(response)

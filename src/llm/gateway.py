@@ -107,9 +107,60 @@ class LLMGateway(LLMProvider):
             return self.chain
         return self.chain[:1]
 
-    async def complete(
-        self, prompt: str, max_tokens: int = 1024, temperature: float = 0.3
+    @property
+    def supports_vision(self) -> bool:
+        """True when any provider in the chain accepts images.
+
+        Delegated rather than inherited. `LLMGateway` *is* an `LLMProvider`,
+        so without this it answers the base class's "no" and a perfectly
+        capable chain is reported as text-only -- which is how a correctly
+        configured gpt-4o deployment ended up with the vision fallback
+        silently switched off.
+        """
+        return any(b.provider.supports_vision for b in self.chain)
+
+    async def describe_image(
+        self,
+        prompt: str,
+        image_png: bytes,
+        max_tokens: int = 512,
+        temperature: float = 0.0,
     ) -> str:
+        """Same fallback chain and the same metrics as `complete`.
+
+        Providers in the chain that cannot see are skipped rather than tried
+        and failed, so a mixed chain degrades to whichever member has vision.
+        """
+        failures: list[tuple[str, Exception]] = []
+
+        for index, binding in enumerate(self._effective_chain()):
+            if not binding.provider.supports_vision:
+                continue
+            try:
+                result = await binding.provider.describe_image(
+                    prompt, image_png, max_tokens=max_tokens, temperature=temperature
+                )
+            except Exception as exc:
+                failures.append((binding.name, exc))
+                gateway_requests.labels(
+                    provider=binding.name, role=self.role, outcome="error"
+                ).inc()
+                logger.warning(
+                    "gateway_vision_failed",
+                    role=self.role,
+                    provider=binding.name,
+                    attempt=index + 1,
+                    error=str(exc),
+                )
+                self._record_fallback(index)
+                continue
+
+            gateway_requests.labels(provider=binding.name, role=self.role, outcome="ok").inc()
+            return result
+
+        raise AllProvidersFailedError(self.role, failures)
+
+    async def complete(self, prompt: str, max_tokens: int = 1024, temperature: float = 0.3) -> str:
         failures: list[tuple[str, Exception]] = []
 
         for index, binding in enumerate(self._effective_chain()):
