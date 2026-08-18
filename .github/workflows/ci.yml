@@ -1,0 +1,74 @@
+# Repo-root CI.
+#
+# Each project keeps its own workflow describing how *it* is built; this one
+# runs both so a change to either is checked on every push. Paths filters mean
+# a steel-only change does not spend a runner rebuilding rag-core.
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  rag-core:
+    name: rag-core (framework-free)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rag-core
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+      - run: uv sync --all-extras
+      - run: uv run ruff check src tests
+      - run: uv run pytest tests/unit -q
+      - name: Risk register matches the code
+        run: uv run python scripts/check_governance.py
+
+  steel-backend:
+    name: steel-doc-intelligence (backend)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: steel-doc-intelligence
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+      - run: uv sync --all-extras
+      - run: uv run ruff check src tests
+      # No path argument: the scope lives in pyproject.toml, so CI and a
+      # developer's local run check exactly the same thing.
+      - run: uv run mypy
+      - run: uv run pytest tests/unit -q
+      - name: Risk register matches the code
+        run: uv run python scripts/check_governance.py
+
+  steel-frontend:
+    name: steel-doc-intelligence (frontend)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: steel-doc-intelligence/frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: steel-doc-intelligence/frontend/package-lock.json
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npm test
+      - run: npm run build
+      # jsdom has no layout engine, so a whole class of defect is invisible to
+      # the suite above. These measure real boxes in a real browser.
+      #
+      # `--project=layout` only: the visual project's screenshot baselines are
+      # per-platform and were generated on Windows.
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:layout

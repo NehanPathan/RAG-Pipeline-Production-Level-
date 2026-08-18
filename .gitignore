@@ -1,0 +1,16 @@
+# Repo-root ignores. Each project keeps its own .gitignore for its build
+# artefacts; these are the ones that must hold everywhere, because a secret
+# committed once is public whether or not it is later deleted.
+.env
+.env.*
+!.env.example
+*.env.backup
+*service-account*.json
+*.pem
+*.key
+
+.ruff_cache/
+.deepeval/
+.pytest_cache/
+__pycache__/
+node_modules/

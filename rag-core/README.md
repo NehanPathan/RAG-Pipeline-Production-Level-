@@ -1,4 +1,11 @@
-# RAG Pipeline — Production Level
+# RAG Core — a production RAG platform, built without frameworks
+
+> **Part of a two-project repository.** This is the framework-free platform:
+> no LangChain, no LangGraph, every layer written directly so it can be read and
+> stepped through. Its sibling
+> [`../steel-doc-intelligence/`](../steel-doc-intelligence/) is the same ideas
+> rebuilt on those frameworks, with a React front end and a steel/CAD domain.
+> See the [repository README](../README.md) for how they relate.
 
 An Enterprise-grade Agentic RAG (Retrieval-Augmented Generation) platform built with FastAPI, Postgres, Redis, Qdrant, and Elasticsearch — designed with a clean, layered architecture (domain / application / infrastructure) for production deployment.
 

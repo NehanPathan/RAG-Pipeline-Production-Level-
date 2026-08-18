@@ -1,6 +1,17 @@
-# RAG Pipeline — Production Level
+# Steel Document Intelligence
 
-An Enterprise-grade Agentic RAG (Retrieval-Augmented Generation) platform built with FastAPI, Postgres, Redis, Qdrant, and Elasticsearch — designed with a clean, layered architecture (domain / application / infrastructure) for production deployment.
+> **Part of a two-project repository.** This is the domain system, built on
+> LangChain and LangGraph with a React front end. Its sibling
+> [`../rag-core/`](../rag-core/) is the same platform written without any
+> framework — a hand-rolled workflow engine, provider clients and embedders —
+> and is the better place to start if you want to see the mechanics with
+> nothing hidden. See the [repository README](../README.md) for how they relate.
+
+A document intelligence platform for steel and structural engineering: it reads
+drawings, schedules, specifications and native CAD files, and answers questions
+about them citing the sheet the answer came from. Built on FastAPI, Postgres,
+Qdrant, Elasticsearch and Redis, with LangGraph orchestrating the query pipeline
+and a React front end.
 
 ## Features
 
