@@ -1,6 +1,6 @@
 import * as React from "react"
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom"
-import { useQuery, useQueryClient } from "@tanstack/react-query"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import {
   ArrowUpIcon,
@@ -10,6 +10,7 @@ import {
   CopyIcon,
   DatabaseZapIcon,
   FileTextIcon,
+  LoaderIcon,
   MessagesSquareIcon,
   PanelRightCloseIcon,
   PanelRightOpenIcon,
@@ -19,9 +20,15 @@ import {
   SparklesIcon,
   ThumbsDownIcon,
   ThumbsUpIcon,
+  Trash2Icon,
 } from "lucide-react"
 import { api } from "@/api"
-import type { Citation, ChatStreamEvent, ConversationMessage } from "@/api/types"
+import type {
+  Citation,
+  ChatStreamEvent,
+  ConversationMessage,
+  ConversationSummary,
+} from "@/api/types"
 import { cn, formatMs, timeAgo } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/input"
@@ -29,10 +36,22 @@ import { Badge } from "@/components/ui/badge"
 import { Card } from "@/components/ui/card"
 import { Kbd, ScrollArea, Separator, Skeleton, Switch, Label } from "@/components/ui/misc"
 import { Hint } from "@/components/ui/tooltip"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { AnswerBody, CitationCard, RefusalNotice } from "@/components/domain/answer"
 import { EmptyState } from "@/components/domain/states"
 import { SheetViewer } from "@/components/domain/sheet-viewer"
 import { FeedbackDialog } from "@/components/domain/feedback-dialog"
+import { InterimTranscript, MicButton } from "@/components/domain/mic-button"
+import { useDictation } from "@/lib/speech"
 
 interface Turn {
   id: string
@@ -94,9 +113,45 @@ export default function AskPage() {
   const scrollRef = React.useRef<HTMLDivElement>(null)
   const inputRef = React.useRef<HTMLTextAreaElement>(null)
 
+  // Appends rather than replaces: someone who typed half a question and then
+  // reached for the microphone means to finish it, not to start again. The
+  // spacing keeps two dictated phrases from running into one word.
+  const dictation = useDictation(
+    React.useCallback((phrase: string) => {
+      setInput((current) => (current ? `${current.replace(/\s+$/, "")} ${phrase}` : phrase))
+      inputRef.current?.focus()
+    }, []),
+  )
+  React.useEffect(() => {
+    if (dictation.error) toast.error("Dictation", { description: dictation.error })
+  }, [dictation.error])
+
   const { data: conversations = [] } = useQuery({
     queryKey: ["conversations"],
     queryFn: () => api.listConversations(30),
+  })
+
+  const [deleting, setDeleting] = React.useState<ConversationSummary | null>(null)
+
+  const remove = useMutation({
+    mutationFn: (conversation: ConversationSummary) =>
+      api.deleteConversation(conversation.id),
+    onSuccess: (_result, conversation) => {
+      void queryClient.invalidateQueries({ queryKey: ["conversations"] })
+      queryClient.removeQueries({ queryKey: ["conversation", conversation.id] })
+      setDeleting(null)
+      toast.success("Removed from your history", {
+        description: "The answers and their ratings are kept for quality tracking.",
+      })
+      // Leaving the user staring at a transcript that is no longer in the
+      // sidebar would be a dead end, so navigate off it — but only if it is
+      // the one they just removed.
+      if (conversation.id === conversationId) navigate("/ask")
+    },
+    onError: (error) =>
+      toast.error("Could not remove the conversation", {
+        description: error instanceof Error ? error.message : undefined,
+      }),
   })
 
   const { data: history, isPending: historyPending } = useQuery({
@@ -262,28 +317,66 @@ export default function AskPage() {
         <Separator />
         <ScrollArea className="min-h-0 flex-1">
           <div className="space-y-0.5 p-1.5">
-            {conversations.map((conversation) => (
-              <Link
-                key={conversation.id}
-                to={`/ask/${conversation.id}`}
-                className={cn(
-                  "block rounded-md px-2 py-1.5 transition-colors",
-                  conversation.id === conversationId
-                    ? "bg-primary-soft text-primary"
-                    : "hover:bg-muted",
-                )}
-              >
-                <span className="line-clamp-2 text-[0.75rem] leading-snug">
-                  {conversation.title}
-                </span>
-                <span className="mt-0.5 block font-mono text-[0.625rem] tabular-nums text-muted-foreground">
-                  {conversation.message_count} msg · {timeAgo(conversation.updated_at)}
-                </span>
-              </Link>
-            ))}
+            {conversations.length === 0 ? (
+              <p className="px-2 py-6 text-center text-[0.6875rem] leading-relaxed text-muted-foreground">
+                No conversations yet. Anything you ask is kept here with its
+                citations and trace id.
+              </p>
+            ) : (
+              conversations.map((conversation) => (
+                <ConversationRow
+                  key={conversation.id}
+                  conversation={conversation}
+                  active={conversation.id === conversationId}
+                  deleting={deleting?.id === conversation.id && remove.isPending}
+                  onDelete={() => setDeleting(conversation)}
+                />
+              ))
+            )}
           </div>
         </ScrollArea>
       </aside>
+
+      <AlertDialog
+        open={Boolean(deleting)}
+        onOpenChange={(open) => !open && !remove.isPending && setDeleting(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove this conversation?</AlertDialogTitle>
+            <AlertDialogDescription className="space-y-2">
+              <span className="block">
+                “{deleting?.title}” will disappear from your history.
+              </span>
+              {/* Said plainly rather than implied. Calling this "delete
+                  permanently" would be a lie, and the reason it is not a hard
+                  delete is one a user can reasonably want to know. */}
+              <span className="block text-[0.6875rem] leading-relaxed">
+                The messages themselves are retained. Any ratings you gave those
+                answers feed the quality gate and the regression dataset, and
+                erasing the conversation would quietly take them with it.
+              </span>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={remove.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              disabled={remove.isPending}
+              onClick={(event) => {
+                // Radix closes the dialog on action click by default; the
+                // mutation decides when to close so a failure keeps the
+                // dialog open with its error rather than vanishing.
+                event.preventDefault()
+                if (deleting) remove.mutate(deleting)
+              }}
+            >
+              {remove.isPending && <LoaderIcon className="animate-spin" />}
+              Remove
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* ------------------------------------------------------- transcript */}
       <div className="flex min-w-0 flex-1 flex-col">
@@ -373,6 +466,7 @@ export default function AskPage() {
                 className="max-h-40 min-h-11 resize-none border-0 bg-transparent py-3 pl-3.5 pr-24 shadow-none focus-visible:ring-0"
               />
               <div className="absolute bottom-2 right-2 flex items-center gap-1.5">
+                <MicButton dictation={dictation} />
                 {busy ? (
                   <Button size="sm" variant="outline" onClick={stop}>
                     <CircleStopIcon />
@@ -386,6 +480,7 @@ export default function AskPage() {
                 )}
               </div>
             </div>
+            <InterimTranscript text={dictation.interim} />
             <p className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 px-1 text-[0.6875rem] text-muted-foreground">
               <span className="flex items-center gap-1">
                 <Kbd>↵</Kbd> send
@@ -484,6 +579,74 @@ export default function AskPage() {
 }
 
 /* ------------------------------------------------------------- fragments */
+
+/**
+ * One row in the history sidebar.
+ *
+ * The delete control is a sibling of the link, not nested inside it — a
+ * button inside an anchor is invalid HTML and behaves inconsistently across
+ * browsers on keyboard activation.
+ *
+ * It sits at a low opacity and comes up to full on hover or keyboard focus.
+ * It used to be fully hidden until hover, which cost more than the tidiness
+ * it bought: users reported the app had no way to delete a conversation, and
+ * on a touch device — where no hover event ever fires — that was literally
+ * true, because nothing could bring the button into reach.
+ */
+function ConversationRow({
+  conversation,
+  active,
+  deleting,
+  onDelete,
+}: {
+  conversation: ConversationSummary
+  active: boolean
+  deleting: boolean
+  onDelete: () => void
+}) {
+  return (
+    <div
+      className={cn(
+        "group relative rounded-md transition-colors",
+        active ? "bg-primary-soft text-primary" : "hover:bg-muted",
+        deleting && "opacity-50",
+      )}
+    >
+      <Link to={`/ask/${conversation.id}`} className="block px-2 py-1.5 pr-8">
+        <span className="line-clamp-2 text-[0.75rem] leading-snug">
+          {conversation.title}
+        </span>
+        <span className="mt-0.5 block font-mono text-[0.625rem] tabular-nums text-muted-foreground">
+          {conversation.message_count} msg · {timeAgo(conversation.updated_at)}
+        </span>
+      </Link>
+
+      <Hint label="Remove from history">
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          disabled={deleting}
+          onClick={onDelete}
+          aria-label={`Remove conversation: ${conversation.title}`}
+          className={cn(
+            // Faint rather than hidden. Revealing it only on `group-hover`
+            // read as "there is no delete" to a user looking straight at the
+            // list, and on a touch device it was worse than invisible: there
+            // is no hover to trigger, so the control could not be reached at
+            // all. A third of an opacity still keeps a column of bins from
+            // competing with the titles, which is what hiding it was for.
+            "absolute right-1 top-1 text-muted-foreground opacity-35 transition-opacity",
+            "hover:bg-destructive/10 hover:text-destructive",
+            "group-hover:opacity-100 focus-visible:opacity-100",
+            deleting && "opacity-100",
+          )}
+        >
+          {deleting ? <LoaderIcon className="animate-spin" /> : <Trash2Icon />}
+        </Button>
+      </Hint>
+    </div>
+  )
+}
 
 function AssistantTurn({
   turn,

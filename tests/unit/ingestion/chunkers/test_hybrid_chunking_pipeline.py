@@ -124,7 +124,6 @@ async def test_positions_are_sequential_and_unique_across_segments_and_tables():
     assert len(set(positions)) == len(positions)
 
 
-# --- Drawing routing -------------------------------------------------------
 #
 # A drawing scans far worse than prose -- rotated dimension text, hatching
 # and leader lines drag the mean confidence down -- so it is validated
@@ -261,7 +260,6 @@ async def test_every_chunk_records_how_its_text_was_obtained():
     assert all(c.chunk_metadata.content_kind == "cad_native" for c in chunks)
 
 
-# --- Per-page and per-block labelling --------------------------------------
 
 
 def _multi_page_parsed(page_kinds: dict[int, ContentKind], blocks) -> ParsedDocument:

@@ -272,7 +272,6 @@ async def test_text_native_extension_never_triggers_ocr():
     assert parsed.ocr_metadata.skipped_reason is not None
 
 
-# --- Drawing PDFs ----------------------------------------------------------
 #
 # Exported CAD drawings arrive as PDFs far more often than as DXF, and the
 # service is where the two questions about them get answered: is this a

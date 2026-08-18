@@ -368,11 +368,11 @@ export default function AccessPage() {
                   <li key={member.user_id} className="flex items-center gap-2">
                     <Avatar className="size-5">
                       <AvatarFallback className="text-[0.5rem]">
-                        {initials(member.display_name)}
+                        {initials(member.display_name ?? member.email)}
                       </AvatarFallback>
                     </Avatar>
                     <span className="min-w-0 flex-1 truncate text-[0.75rem]">
-                      {member.display_name}
+                      {member.display_name ?? member.email}
                     </span>
                     <span
                       className={cn(

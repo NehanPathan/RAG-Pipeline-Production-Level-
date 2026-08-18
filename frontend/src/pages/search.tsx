@@ -11,6 +11,8 @@ import {
 import { api } from "@/api"
 import type { FacetValue, SearchHit, SearchRequest } from "@/api/types"
 import { cn, formatNumber } from "@/lib/utils"
+import { InterimTranscript, MicButton } from "@/components/domain/mic-button"
+import { useDictation } from "@/lib/speech"
 import { Page } from "@/components/layout/page"
 import { PageHeader } from "@/components/domain/layout"
 import { Button } from "@/components/ui/button"
@@ -60,6 +62,14 @@ export default function SearchPage() {
   const [selected, setSelected] = React.useState<Record<string, string[]>>({})
   const [includeSuperseded, setIncludeSuperseded] = React.useState(false)
   const [density, setDensity] = React.useState<"comfortable" | "compact">("comfortable")
+
+  // Same append-don't-replace behaviour as the Ask composer, so switching
+  // between the two pages does not mean learning the control twice.
+  const dictation = useDictation(
+    React.useCallback((phrase: string) => {
+      setQuery((current) => (current ? `${current.replace(/\s+$/, "")} ${phrase}` : phrase))
+    }, []),
+  )
 
   const facetsQ = useQuery({
     queryKey: ["facets", includeSuperseded],
@@ -152,8 +162,13 @@ export default function SearchPage() {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="ISMB 300, base plate, M24 HSFG, grout gap…"
-            className="h-10 pl-9"
+            className={cn("h-10 pl-9", dictation.supported && "pr-11")}
           />
+          {/* Inside the field rather than beside it: the search row already
+              carries a submit button and a filter trigger, and a third
+              standalone button reads as a third action rather than as a way of
+              filling in the one input. */}
+          <MicButton dictation={dictation} className="absolute right-1.5 top-1/2 -translate-y-1/2" />
         </div>
         <Button type="submit" size="lg" className="h-10">
           Search
@@ -176,6 +191,11 @@ export default function SearchPage() {
           </SheetContent>
         </Sheet>
       </form>
+
+      {/* Under the row, not inside the field: interim words are revised as the
+          recogniser hears more, and this input submits on Enter — so a partial
+          phrase written into it is a search nobody asked for. */}
+      <InterimTranscript text={dictation.interim} />
 
       <div className="mt-5 grid gap-5 lg:grid-cols-[15rem_1fr] xl:grid-cols-[16.5rem_1fr]">
         <aside className="hidden lg:block">

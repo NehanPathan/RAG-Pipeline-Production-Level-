@@ -75,8 +75,20 @@ export function formatDate(iso: string | null | undefined, withTime = false): st
 }
 
 /** First letters of a name, for avatars. Two at most. */
-export function initials(name: string): string {
-  return name
+/**
+ * Two letters for an avatar fallback.
+ *
+ * Accepts null because the names it is given are nullable at the source:
+ * `users.display_name` is a nullable column, and both the member and user
+ * payloads carry it through as `null`. Typed as non-null here once, this threw
+ * `Cannot read properties of null (reading 'split')` and — with no error
+ * boundary at the time — blanked the whole app on the access page.
+ *
+ * An avatar with no name should be a blank circle. It should never be the
+ * reason a page does not render.
+ */
+export function initials(name: string | null | undefined): string {
+  return (name ?? "")
     .split(/[\s@._-]+/)
     .filter(Boolean)
     .slice(0, 2)

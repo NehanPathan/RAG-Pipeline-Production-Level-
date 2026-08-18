@@ -352,13 +352,34 @@ export function CitationCard({
 }
 
 /** Shown when the pipeline refuses — a refusal is a result, not an error. */
+/**
+ * The keys are the values the API actually sends. `refusal_reason` carries the
+ * **control id** that produced the refusal (`src/retrieval/pipeline.py` sets it
+ * from `decision.control_id`), and this map previously keyed on invented names
+ * — `no_grounding`, `clearance`, `policy` — that nothing ever emitted. So every
+ * real refusal fell through to the default, which asserted the question had
+ * been about "a structural dimension". Asked who was logged in, the user was
+ * told an ungrounded answer about a dimension would be worse than none.
+ *
+ * These three are the whole set the API can send: `kill_switch` from the graph
+ * and the two grounding controls from the policy. Clearance filtering is not
+ * among them — it removes passages during retrieval, so it surfaces as
+ * C-GOV-03 with nothing retrieved rather than as a reason of its own. Adding a
+ * key for it would be inventing wire values again.
+ *
+ * C-GOV-03 is the common one and the only one where the reader can act, so it
+ * says what would change the outcome instead of only justifying the refusal.
+ */
 export function RefusalNotice({ reason }: { reason?: string | null }) {
   const explanations: Record<string, string> = {
     kill_switch: "An administrator has paused answering. Your question was not sent to a model.",
-    no_grounding:
-      "Nothing in the corpus cleared the grounding threshold, so answering would have meant guessing.",
-    clearance: "Every candidate passage sat above your clearance.",
-    policy: "The answer breached a policy quality floor and was withheld rather than shown.",
+    "C-GOV-03":
+      "Nothing in the indexed documents matched, so answering would have meant guessing. " +
+      "If the question was about a drawing, naming the sheet or the piece mark usually finds it; " +
+      "if it was about this workspace rather than its documents, the corpus will not hold it.",
+    "C-GOV-04":
+      "Passages were retrieved, but the answer cited none of them — so it was not actually " +
+      "grounded in them and was withheld rather than shown.",
   }
   return (
     <div className="flex items-start gap-2.5 rounded-md border border-warn/35 bg-warn-soft/50 p-3 text-warn">
@@ -367,7 +388,7 @@ export function RefusalNotice({ reason }: { reason?: string | null }) {
         <p className="font-medium">No answer was given</p>
         <p className="text-xs leading-relaxed opacity-90">
           {(reason && explanations[reason]) ??
-            "The pipeline declined to answer. This is a deliberate outcome, not a failure — an ungrounded answer about a structural dimension is worse than none."}
+            "The pipeline declined to answer rather than answer without support. This is a deliberate outcome, not a failure."}
         </p>
       </div>
     </div>

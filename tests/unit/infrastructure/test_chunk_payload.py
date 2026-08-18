@@ -1,6 +1,7 @@
 import uuid
 
 from src.domain.entities.document import ChunkMetadata, ChunkType, DocumentChunk
+from src.domain.value_objects.provenance import PRECISION_BLOCK, SPACE_SHEET, Region
 from src.domain.value_objects.sensitivity import Sensitivity
 from src.infrastructure.search.elasticsearch.repository import INDEX_MAPPINGS
 from src.infrastructure.serialization.chunk_payload import chunk_to_payload, payload_to_chunk
@@ -139,3 +140,79 @@ def test_a_chunk_ingested_before_classification_existed_has_no_kind():
     del payload["content_kind"]
 
     assert payload_to_chunk(payload, uuid.uuid4()).chunk_metadata.content_kind is None
+
+
+def test_regions_survive_the_round_trip():
+    """A highlight rectangle that only lives in memory is not a citation
+    anyone can check after the answer is streamed."""
+    original = _chunk()
+    original.chunk_metadata.regions = [
+        Region(page_number=3, x0=0.1, y0=0.2, x1=0.3, y1=0.25, space=SPACE_SHEET),
+        Region(page_number=3, x0=0.6, y0=0.7, x1=0.9, y1=0.8, space=SPACE_SHEET),
+    ]
+    original.chunk_metadata.region_precision = PRECISION_BLOCK
+
+    rebuilt = payload_to_chunk(chunk_to_payload(original), original.id)
+
+    assert rebuilt.chunk_metadata.regions == original.chunk_metadata.regions
+    assert rebuilt.chunk_metadata.region_precision == PRECISION_BLOCK
+
+
+def test_regions_are_stored_but_not_indexed_in_elasticsearch():
+    """Six float subfields per region per chunk is a mapping explosion that
+    buys nothing -- nothing queries a rectangle."""
+    assert INDEX_MAPPINGS["mappings"]["properties"]["regions"] == {
+        "type": "object",
+        "enabled": False,
+    }
+
+
+def test_a_chunk_ingested_before_regions_existed_round_trips():
+    """Rows written before this field have no `regions` key, and the honest
+    value is "not captured" rather than a rectangle around nothing."""
+    payload = chunk_to_payload(_chunk())
+    del payload["regions"]
+    del payload["region_precision"]
+
+    rebuilt = payload_to_chunk(payload, uuid.uuid4())
+
+    assert rebuilt.chunk_metadata.regions == []
+    assert rebuilt.chunk_metadata.region_precision is None
+
+
+def test_a_malformed_region_is_dropped_rather_than_raising():
+    payload = chunk_to_payload(_chunk())
+    payload["regions"] = [{"page_number": 1, "x0": "nonsense"}]
+
+    rebuilt = payload_to_chunk(payload, uuid.uuid4())
+
+    assert rebuilt.chunk_metadata.regions == []
+
+
+def test_layers_survive_the_round_trip_and_are_indexed():
+    """The point of denormalising: a post-filter can only narrow what top_k
+    already returned, so a layer outside the first page of hits is invisible
+    to it."""
+    original = _chunk()
+    original.chunk_metadata.layers = ["S-TEXT", "S-SECT_STEEL_THRU"]
+
+    payload = chunk_to_payload(original)
+    rebuilt = payload_to_chunk(payload, original.id)
+
+    assert payload["layers"] == ["S-SECT_STEEL_THRU", "S-TEXT"], "sorted, deduplicated"
+    assert set(rebuilt.chunk_metadata.layers) == {"S-TEXT", "S-SECT_STEEL_THRU"}
+    assert INDEX_MAPPINGS["mappings"]["properties"]["layers"] == {"type": "keyword"}
+
+
+def test_layers_are_a_qdrant_payload_index():
+    """An unindexed payload field means Qdrant full-scans for it forever, with
+    correct results and silently terrible latency."""
+    from src.infrastructure.vector_store.qdrant.repository import INDEXED_PAYLOAD_FIELDS
+
+    assert "layers" in INDEXED_PAYLOAD_FIELDS
+
+
+def test_a_chunk_with_no_layers_round_trips_as_empty():
+    """Prose has no layers, and an invented one would make the filter lie."""
+    rebuilt = payload_to_chunk(chunk_to_payload(_chunk()), uuid.uuid4())
+    assert rebuilt.chunk_metadata.layers == []

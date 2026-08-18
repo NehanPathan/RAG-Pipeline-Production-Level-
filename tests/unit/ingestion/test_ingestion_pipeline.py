@@ -213,7 +213,6 @@ async def test_ingestion_succeeds_without_intelligence_recorder(pipeline, docume
     assert result.status == DocumentStatus.INDEXED
 
 
-# --- Revision registration -------------------------------------------------
 #
 # RegisterRevision was fully implemented but never called, so every chunk in
 # the corpus carried a null drawing_number and revision_label -- the two

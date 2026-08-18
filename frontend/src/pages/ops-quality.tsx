@@ -58,7 +58,7 @@ import {
 } from "@/components/ui/table"
 import { Hint } from "@/components/ui/tooltip"
 import { ChartFrame, MetricBar, chartAxis, chartGrid, chartTooltip } from "@/components/domain/chart"
-import { EmptyState, TextSkeleton, TileRowSkeleton } from "@/components/domain/states"
+import { EmptyState, ErrorState, TextSkeleton, TileRowSkeleton } from "@/components/domain/states"
 
 export default function QualityPage() {
   const { hasRole } = useAuth()
@@ -165,6 +165,18 @@ export default function QualityPage() {
             <div className="mt-3">
               <TextSkeleton lines={4} />
             </div>
+          ) : gateQ.isError ? (
+            // Distinct from the empty state below. Without this branch a 403
+            // and "no run has completed yet" render identically, and the
+            // difference is the whole question: one is a permission problem
+            // to escalate, the other is a run nobody has started.
+            <ErrorState
+              compact
+              className="mt-3"
+              resource="the quality gate"
+              error={gateQ.error}
+              onRetry={() => void gateQ.refetch()}
+            />
           ) : gate?.status === "no_completed_run" ? (
             <EmptyState
               compact
@@ -231,6 +243,14 @@ export default function QualityPage() {
             <div className="mt-3">
               <TextSkeleton lines={4} />
             </div>
+          ) : onlineQ.isError ? (
+            <ErrorState
+              compact
+              className="mt-3"
+              resource="online metrics"
+              error={onlineQ.error}
+              onRetry={() => void onlineQ.refetch()}
+            />
           ) : online ? (
             <>
               <div className="mt-3.5 space-y-3">
@@ -309,6 +329,12 @@ export default function QualityPage() {
 
           {runsQ.isPending ? (
             <TextSkeleton lines={6} />
+          ) : runsQ.isError ? (
+            <ErrorState
+              resource="evaluation runs"
+              error={runsQ.error}
+              onRetry={() => void runsQ.refetch()}
+            />
           ) : runs.length === 0 ? (
             <EmptyState
               title="No evaluation runs yet"
@@ -391,6 +417,12 @@ export default function QualityPage() {
         <TabsContent value="feedback">
           {feedbackQ.isPending ? (
             <TileRowSkeleton />
+          ) : feedbackQ.isError ? (
+            <ErrorState
+              resource="feedback"
+              error={feedbackQ.error}
+              onRetry={() => void feedbackQ.refetch()}
+            />
           ) : feedback ? (
             <div className="space-y-5">
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -402,7 +434,10 @@ export default function QualityPage() {
                   icon={StarIcon}
                   tone={(feedback.average_rating ?? 0) < 3 ? "warn" : "ok"}
                 />
-                <StatTile label="Positive" value={feedback.positive} tone="ok" />
+                {/* The server counts negatives, not positives. Deriving it
+                    from total - negative would be wrong: a 3-star rating is
+                    neither. Shown as unknown rather than as a made-up zero. */}
+                <StatTile label="Positive" value={feedback.positive ?? "—"} tone="ok" />
                 <StatTile
                   label="Negative"
                   value={feedback.negative}
@@ -411,10 +446,10 @@ export default function QualityPage() {
                 />
               </div>
 
-              {Object.keys(feedback.by_tag).length > 0 && (
+              {Object.keys(feedback.by_tag ?? {}).length > 0 && (
                 <Section title="What people report" dense>
                   <div className="flex flex-wrap gap-2">
-                    {Object.entries(feedback.by_tag)
+                    {Object.entries(feedback.by_tag ?? {})
                       .sort((a, b) => b[1] - a[1])
                       .map(([tag, count]) => (
                         <span

@@ -85,7 +85,6 @@ async def test_generate_domain_is_none_when_no_sources_selected(
     assert spec.domain is None
 
 
-# --- Generated tags are validated against the corpus ------------------------
 #
 # A generated tag is a guess about wording, and the model has no idea what the
 # corpus is tagged with. Applied as a hard filter, a guess that matches

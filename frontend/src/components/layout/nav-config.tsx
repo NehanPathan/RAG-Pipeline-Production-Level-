@@ -90,6 +90,13 @@ export const NAV: NavGroup[] = [
         to: "/ingest",
         icon: UploadCloudIcon,
         roles: ["analyst", "steward", "admin"],
+        // Exact match. `/ingest/queue` is a sibling in this menu, not a detail
+        // view of Upload, so without this both rows light up at once and the
+        // sidebar stops saying where you are. Every other nested route here
+        // (`/drawings/:id`, `/documents/:id`) *is* a detail view and should
+        // keep its parent highlighted, which is why this is set per item
+        // rather than globally.
+        end: true,
         description: "Add drawings, specifications and revisions",
       },
       {

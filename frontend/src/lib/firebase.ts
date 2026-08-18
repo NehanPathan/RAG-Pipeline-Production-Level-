@@ -1,18 +1,15 @@
 /**
  * Firebase sign-in over its REST API, without the web SDK.
  *
- * The SDK would add roughly 200 KB to the bundle to wrap three HTTP calls we
- * make once each, and it manages a token lifecycle we do not want it to own:
- * the server is the authority on identity here, and the client's only job is
- * to obtain an ID token and hand it over. Doing it directly also keeps the
- * network surface visible — every host this file can reach is named in the
- * Content-Security-Policy, which is impossible to reason about when a
- * dependency decides where to connect.
+ * The SDK would add ~200 KB to wrap three HTTP calls we make once each, and
+ * it manages a token lifecycle we do not want it to own -- the server is the
+ * authority on identity, and the client's only job is to obtain an ID token
+ * and hand it over. Doing it directly also keeps every reachable host named
+ * in the Content-Security-Policy.
  *
- * The API key is not a secret. A Firebase web API key identifies the project
- * and is designed to ship in client bundles; security comes from token
- * verification on the server (firebase-admin, see src/auth/firebase.py) and
- * from the email-domain allow-list, never from hiding this value.
+ * The API key is not a secret. It identifies the project and is designed to
+ * ship in client bundles; security comes from server-side token verification
+ * and the email-domain allow-list.
  */
 
 const IDENTITY = "https://identitytoolkit.googleapis.com/v1"

@@ -1,16 +1,13 @@
 /**
  * Synthetic sheet renderer.
  *
- * The backend renders every page to PNG during ingestion (see 14.6, "render
- * always"), and in production this component would draw that raster. Until the
- * asset route exists it draws the sheet itself — a real frame, grid bubbles,
- * I-section columns, braced bays, dimension strings and a populated title
- * block — from the document's own metadata.
+ * The backend renders every page to PNG at ingest and in production this
+ * would draw that raster. Until the asset route exists it draws the sheet
+ * itself from the document's metadata -- frame, grid bubbles, I-sections,
+ * dimension strings, title block.
  *
- * That is worth more than a grey rectangle: highlight geometry, zoom, page
- * navigation and the region overlay are all exercised against something with
- * the proportions and density of an actual drawing, so the layout is honest
- * about how it behaves on one.
+ * Worth more than a grey rectangle: highlight geometry, zoom and the region
+ * overlay are exercised against something with a real drawing's proportions.
  */
 import * as React from "react"
 import { cn } from "@/lib/utils"

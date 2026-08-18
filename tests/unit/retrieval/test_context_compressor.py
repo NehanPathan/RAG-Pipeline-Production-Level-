@@ -83,7 +83,6 @@ async def test_compress_empty_list_returns_empty(compressor):
     assert result == []
 
 
-# --- Short chunks are kept verbatim ----------------------------------------
 #
 # Compression trims a long passage down to its relevant part. A short chunk
 # has no fat, and the call stops being "extract the relevant sentences" and

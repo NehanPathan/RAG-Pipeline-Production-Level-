@@ -1,5 +1,5 @@
 import * as React from "react"
-import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom"
+import { NavLink, Outlet, useLocation, useMatch, useNavigate } from "react-router-dom"
 import {
   ChevronsLeftIcon,
   ChevronsRightIcon,
@@ -36,6 +36,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet"
 import { RoleBadge, SensitivityBadge } from "@/components/domain/badges"
+import { RouteErrorBoundary } from "@/components/domain/error-boundary"
 import { Wordmark } from "@/components/layout/brand"
 import { LEGEND_ITEM, visibleNav } from "@/components/layout/nav-config"
 import { CommandPalette } from "@/components/layout/command-palette"
@@ -99,24 +100,52 @@ export function AppShell() {
         </div>
 
         <ScrollArea className="min-h-0 flex-1">
-          <nav className={cn("space-y-4 pb-4", collapsed ? "px-1.5" : "px-2")}>
-            {groups.map((group) => (
-              <div key={group.label} className="space-y-0.5">
-                {!collapsed && <p className="eyebrow px-2 pb-1">{group.label}</p>}
-                {collapsed && <Separator className="mx-auto my-2 w-6" />}
-                {group.items.map((item) => (
-                  <SidebarLink key={item.to} item={item} collapsed={collapsed} />
-                ))}
+          {/* Collapsed and expanded are laid out separately rather than by
+              piling conditional classes onto one tree. They are different
+              layouts, not one layout with different padding: expanded is a
+              stack of labelled groups, collapsed is a single centred column of
+              icons whose only structure is a rule between groups. Trying to
+              serve both from one set of classes is what left the icons sitting
+              four pixels left of the wordmark above them, with a stray divider
+              under the logo and no divider at all before Reference. */}
+          {collapsed ? (
+            <nav className="flex flex-col items-center gap-1 pb-4">
+              {groups.map((group, index) => (
+                <React.Fragment key={group.label}>
+                  {/* Between groups, never before the first. */}
+                  {index > 0 && <Separator className="my-1.5 w-6" />}
+                  {group.items.map((item) => (
+                    <SidebarLink key={item.to} item={item} collapsed />
+                  ))}
+                </React.Fragment>
+              ))}
+              <Separator className="my-1.5 w-6" />
+              <SidebarLink item={LEGEND_ITEM} collapsed />
+            </nav>
+          ) : (
+            <nav className="space-y-4 px-2 pb-4">
+              {groups.map((group) => (
+                <div key={group.label} className="space-y-0.5">
+                  <p className="eyebrow px-2 pb-1">{group.label}</p>
+                  {group.items.map((item) => (
+                    <SidebarLink key={item.to} item={item} collapsed={false} />
+                  ))}
+                </div>
+              ))}
+              <div className="space-y-0.5 pt-1">
+                <p className="eyebrow px-2 pb-1">Reference</p>
+                <SidebarLink item={LEGEND_ITEM} collapsed={false} />
               </div>
-            ))}
-            <div className="space-y-0.5 pt-1">
-              {!collapsed && <p className="eyebrow px-2 pb-1">Reference</p>}
-              <SidebarLink item={LEGEND_ITEM} collapsed={collapsed} />
-            </div>
-          </nav>
+            </nav>
+          )}
         </ScrollArea>
 
-        <div className={cn("shrink-0 border-t border-border p-2", collapsed && "px-1.5")}>
+        <div
+          className={cn(
+            "shrink-0 border-t border-border p-2",
+            collapsed && "flex justify-center px-0",
+          )}
+        >
           <Button
             variant="ghost"
             size={collapsed ? "icon-sm" : "sm"}
@@ -124,7 +153,10 @@ export function AppShell() {
             className={cn("text-muted-foreground", !collapsed && "w-full justify-start")}
           >
             {collapsed ? <ChevronsRightIcon /> : <ChevronsLeftIcon />}
-            {!collapsed && <span>Collapse</span>}
+            {/* Same omission as the nav links: collapsed, this was a button
+                with nothing in it but an arrow, so the one control that undoes
+                the collapse was the one a screen reader could not name. */}
+            {collapsed ? <span className="sr-only">Expand sidebar</span> : <span>Collapse</span>}
           </Button>
         </div>
       </aside>
@@ -289,12 +321,17 @@ export function AppShell() {
           </div>
         </header>
 
-        {/* Suspense sits inside the shell, not around it, so a lazy route's
-            chunk arriving never blanks the sidebar the user just clicked. */}
+        {/* Suspense and the error boundary both sit inside the shell, not
+            around it, so neither a lazy chunk arriving nor a page throwing
+            blanks the sidebar the user just clicked. Keyed on the path so
+            navigating away from a broken page clears the error rather than
+            stranding the user on it. */}
         <main className="min-w-0 flex-1">
-          <React.Suspense fallback={<RouteFallback />}>
-            <Outlet />
-          </React.Suspense>
+          <RouteErrorBoundary resetKey={location.pathname}>
+            <React.Suspense fallback={<RouteFallback />}>
+              <Outlet />
+            </React.Suspense>
+          </RouteErrorBoundary>
         </main>
       </div>
 
@@ -330,28 +367,47 @@ function SidebarLink({
   collapsed: boolean
 }) {
   const Icon = item.icon
+
+  // Active state is resolved here rather than through NavLink's render props,
+  // and that is load-bearing rather than stylistic.
+  //
+  // Collapsed, the link is wrapped in `Hint`, whose Radix trigger uses
+  // `asChild` — and Slot merges `className` by *string concatenation*. Handed
+  // NavLink's className **function** it stringified it, so the rail's links
+  // carried the literal source text of the callback as their class list. None
+  // of `size-9`, the hover state or the active background ever applied: the
+  // icons were bare 16px glyphs with no hit target and no selected state,
+  // which is most of what "the icons look mixed up" was.
+  //
+  // Expanded, the same component worked perfectly — no Hint, no Slot, no
+  // stringify — which is exactly why this survived so long.
+  const match = useMatch({ path: item.to, end: item.end ?? false })
+  const isActive = match !== null
+
   const link = (
     <NavLink
       to={item.to}
       end={item.end}
-      className={({ isActive }) =>
-        cn(
-          "relative flex items-center gap-2.5 rounded-md text-[0.8125rem] font-medium transition-colors",
-          collapsed ? "size-9 justify-center" : "px-2 py-1.5",
-          isActive
-            ? "bg-primary-soft text-primary"
-            : "text-muted-foreground hover:bg-muted hover:text-foreground",
-        )
-      }
+      className={cn(
+        "relative flex items-center gap-2.5 rounded-md text-[0.8125rem] font-medium transition-colors",
+        collapsed ? "size-9 justify-center" : "px-2 py-1.5",
+        isActive
+          ? "bg-primary-soft text-primary"
+          : "text-muted-foreground hover:bg-muted hover:text-foreground",
+      )}
     >
-      {({ isActive }) => (
-        <>
-          {isActive && !collapsed && (
-            <span className="absolute -left-2 top-1/2 h-4 w-[2px] -translate-y-1/2 rounded-r bg-primary" />
-          )}
-          <Icon className="size-4 shrink-0" />
-          {!collapsed && <span className="truncate">{item.label}</span>}
-        </>
+      {isActive && !collapsed && (
+        <span className="absolute -left-2 top-1/2 h-4 w-[2px] -translate-y-1/2 rounded-r bg-primary" />
+      )}
+      <Icon className="size-4 shrink-0" />
+      {collapsed ? (
+        // Collapsed, the icon is the only visible content — and an icon is not
+        // an accessible name, so every link in the rail was reaching a screen
+        // reader unnamed. The tooltip does not stand in for this: it is
+        // hover-and-focus content, not the link's own label.
+        <span className="sr-only">{item.label}</span>
+      ) : (
+        <span className="truncate">{item.label}</span>
       )}
     </NavLink>
   )

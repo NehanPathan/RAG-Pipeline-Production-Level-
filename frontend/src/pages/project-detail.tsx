@@ -300,11 +300,13 @@ export default function ProjectDetailPage() {
                       <TableCell>
                         <div className="flex items-center gap-2.5">
                           <Avatar className="size-7">
-                            <AvatarFallback>{initials(member.display_name)}</AvatarFallback>
+                            <AvatarFallback>
+                              {initials(member.display_name ?? member.email)}
+                            </AvatarFallback>
                           </Avatar>
                           <div className="min-w-0 leading-tight">
                             <p className="truncate text-[0.8125rem] font-medium">
-                              {member.display_name}
+                              {member.display_name ?? member.email}
                             </p>
                             <p className="truncate text-[0.6875rem] text-muted-foreground">
                               {member.email}
