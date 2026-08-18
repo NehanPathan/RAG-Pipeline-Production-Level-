@@ -29,5 +29,6 @@ class CitationPreserver:
                 chunk_id=chunk.id,
                 page_number=chunk.chunk_metadata.page_number,
                 section=chunk.chunk_metadata.section,
+                document_id=chunk.document_id,
             )
         return citations

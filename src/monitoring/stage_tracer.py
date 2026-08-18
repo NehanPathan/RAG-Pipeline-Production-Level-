@@ -8,7 +8,8 @@ from opentelemetry.trace import Status, StatusCode
 
 from src.monitoring.langfuse_tracer import get_langfuse_client
 from src.monitoring.logger import get_logger
-from src.monitoring.tracing import get_tracer
+from src.monitoring.prometheus_metrics import stage_latency
+from src.monitoring.tracing import get_current_trace_id, get_tracer
 
 logger = get_logger(__name__)
 
@@ -42,8 +43,17 @@ class TracedStage:
             if isinstance(value, _SCALAR_TYPES):
                 self._otel_span.set_attribute(key, value)
 
+        # Stamp the request's trace id onto every stage span so a stage can
+        # be traced back to its request even when a span is inspected in
+        # isolation (e.g. a slow-span query in the backend).
+        trace_id = get_current_trace_id()
+        if trace_id:
+            self._otel_span.set_attribute("trace_id", trace_id)
+
         self._langfuse_cm = get_langfuse_client().start_as_current_observation(
-            name=self._name, as_type="span", input=self._attributes or None
+            name=self._name,
+            as_type="span",
+            input={**self._attributes, "trace_id": trace_id} if trace_id else (self._attributes or None),
         )
         self._langfuse_span = self._langfuse_cm.__enter__()
 
@@ -60,8 +70,15 @@ class TracedStage:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> bool:
-        duration_ms = int((time.perf_counter() - self._start) * 1000)
+        duration_seconds = time.perf_counter() - self._start
+        duration_ms = int(duration_seconds * 1000)
         self._result["duration_ms"] = duration_ms
+
+        # One observation here gives every stage a Prometheus histogram
+        # without touching any of the twelve call sites. Traces answer "why
+        # was *this* request slow"; this answers "which stage is slow across
+        # all requests" -- the aggregate view a trace can never provide.
+        stage_latency.labels(stage=self._name).observe(duration_seconds)
 
         if exc is not None:
             self._otel_span.record_exception(exc)

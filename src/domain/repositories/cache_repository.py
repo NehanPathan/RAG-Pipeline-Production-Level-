@@ -16,3 +16,12 @@ class SemanticCacheRepository(ABC):
 
     @abstractmethod
     async def create_collection_if_not_exists(self, vector_size: int) -> None: ...
+
+    @abstractmethod
+    async def delete_by_document(self, document_id: uuid.UUID) -> int:
+        """Invalidate every cached answer derived from the given document.
+
+        Required for deletion to actually mean deletion: without it a removed
+        document keeps answering questions from the semantic cache.
+        """
+        ...

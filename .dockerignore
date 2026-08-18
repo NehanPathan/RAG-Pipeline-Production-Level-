@@ -30,6 +30,11 @@ ENV/
 
 # Docs / project metadata (not needed inside image)
 docs/
+# ...except the risk register, which is not documentation: the API loads it at
+# runtime for /governance/risks and /governance/status. It lives under docs/
+# so a reviewer finds it beside the governance write-ups, which means the
+# blanket docs/ exclusion silently removed it from the image.
+!docs/governance/risk_register.yaml
 README.md
 tests/
 

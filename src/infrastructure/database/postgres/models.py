@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
-    BigInteger, Boolean, DateTime, Float, ForeignKey,
+    BigInteger, Boolean, DateTime, Float, ForeignKey, Index,
     Integer, SmallInteger, String, Text, func,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
@@ -21,6 +21,14 @@ class UserModel(Base):
     hashed_password: Mapped[str | None] = mapped_column(String(255))
     role: Mapped[str] = mapped_column(String(50), nullable=False, default="viewer")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+    # Identity-provider link (src/auth/). Nullable so locally-created users
+    # and the dev placeholder keep working; unique so one Firebase account
+    # can never map to two local users.
+    firebase_uid: Mapped[str | None] = mapped_column(String(128), unique=True)
+    display_name: Mapped[str | None] = mapped_column(String(255))
+    email_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -59,6 +67,13 @@ class DocumentModel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     indexed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # Governance MAP columns (see docs/governance/GM3_FRAMEWORK.md). Both are
+    # nullable so the migration needs no backfill; NULL `sensitivity` is read
+    # as the policy's default_sensitivity, which is `internal` — an
+    # unclassified document must not be treated as public.
+    sensitivity: Mapped[str | None] = mapped_column(String(20))
+    retention_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     user: Mapped[UserModel] = relationship("UserModel", back_populates="documents")
     # passive_deletes=True: trust the FK's ondelete="CASCADE" in the DB rather
@@ -114,6 +129,12 @@ class DocumentChunkModel(Base):
     semantic_cluster: Mapped[int | None] = mapped_column(Integer)
     ocr_confidence: Mapped[float | None] = mapped_column(Float)
     language: Mapped[str | None] = mapped_column(String(20))
+
+    # Denormalized from documents.sensitivity so a chunk-level read (and the
+    # Qdrant/Elasticsearch payloads built from it) carries its classification
+    # without a join. Kept in sync by the ingestion pipeline; a
+    # reclassification re-writes both stores (see documents route).
+    sensitivity: Mapped[str | None] = mapped_column(String(20))
 
     document: Mapped[DocumentModel] = relationship("DocumentModel", back_populates="chunks")
 
@@ -210,12 +231,24 @@ class UserFeedbackModel(Base):
     __tablename__ = "user_feedback"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    message_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("messages.id", ondelete="CASCADE"))
+    # Nullable: a user can rate an answer by quoting the trace id from the
+    # response header even when the message row was never written (e.g. the
+    # stream was aborted mid-flight). Losing the feedback because the join
+    # target is missing would be the wrong trade.
+    message_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("messages.id", ondelete="CASCADE")
+    )
+    trace_id: Mapped[str | None] = mapped_column(String(64))
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
     rating: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     comment: Mapped[str | None] = mapped_column(Text)
     feedback_tags: Mapped[list[str] | None] = mapped_column(ARRAY(String))
+    # Set when a negative rating has been promoted into the golden dataset,
+    # so the MANAGE feedback loop never enqueues the same complaint twice.
+    promoted_to_dataset: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (Index("ix_user_feedback_created_at", "created_at"),)
 
 
 class SystemSettingModel(Base):
@@ -227,3 +260,67 @@ class SystemSettingModel(Base):
     description: Mapped[str | None] = mapped_column(Text)
     updated_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class AuditLogModel(Base):
+    """Append-only record of every governed action (GOVERN function).
+
+    Deliberately has no `updated_at` and no ORM-side update path: an audit
+    trail that can be edited is not an audit trail. `actor_id` is nullable
+    and carries no foreign key on purpose — deleting a user must never
+    cascade away the record of what they did, and system-initiated actions
+    (the retention job, startup reclassification) have no actor at all.
+    """
+
+    __tablename__ = "audit_log"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    trace_id: Mapped[str | None] = mapped_column(String(64))
+    actor_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    actor_role: Mapped[str | None] = mapped_column(String(50))
+    action: Mapped[str] = mapped_column(String(64), nullable=False)
+    resource_type: Mapped[str | None] = mapped_column(String(64))
+    resource_id: Mapped[str | None] = mapped_column(String(255))
+    outcome: Mapped[str] = mapped_column(String(20), nullable=False, default="completed")
+    reason: Mapped[str | None] = mapped_column(Text)
+    control_id: Mapped[str | None] = mapped_column(String(32))
+    before_state: Mapped[dict | None] = mapped_column(JSONB)
+    after_state: Mapped[dict | None] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        # The two queries this table actually serves: "what happened around
+        # time T" and "everything that ever touched resource X".
+        Index("ix_audit_log_created_at", "created_at"),
+        Index("ix_audit_log_resource", "resource_type", "resource_id"),
+        Index("ix_audit_log_action", "action"),
+    )
+
+
+class OnlineEvalSampleModel(Base):
+    """One live answer pulled for judge scoring (MEASURE function).
+
+    Separate from `evaluation_metrics` because the two answer different
+    questions: that table holds aggregates over a fixed golden set, while
+    this one holds individual production interactions with their scores
+    attached, which is what makes drift on *real* traffic visible.
+    """
+
+    __tablename__ = "online_eval_samples"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    trace_id: Mapped[str | None] = mapped_column(String(64))
+    message_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("messages.id", ondelete="SET NULL")
+    )
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    answer: Mapped[str] = mapped_column(Text, nullable=False)
+    context_count: Mapped[int] = mapped_column(Integer, default=0)
+    citation_count: Mapped[int] = mapped_column(Integer, default=0)
+    scores: Mapped[dict] = mapped_column(JSONB, default=dict)
+    scorer_model: Mapped[str | None] = mapped_column(String(100))
+    status: Mapped[str] = mapped_column(String(20), default="scored")
+    error_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (Index("ix_online_eval_created_at", "created_at"),)

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
+
+from src.domain.value_objects.sensitivity import Sensitivity
 
 
 class DocumentStatus(str, Enum):
@@ -47,6 +49,26 @@ class Document:
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
     indexed_at: datetime | None = None
+
+    # MAP -- data classification and lifecycle. The field default is INTERNAL
+    # rather than the policy default because a dataclass default cannot read
+    # settings; the upload route applies `policy.default_sensitivity`
+    # explicitly. Defaulting to INTERNAL (not PUBLIC) means a construction
+    # site that forgets to classify fails closed.
+    sensitivity: Sensitivity = Sensitivity.INTERNAL
+    retention_until: datetime | None = None
+
+    def classify(self, sensitivity: Sensitivity, retention_days: int | None = None) -> None:
+        """Set the classification and, optionally, the retention deadline."""
+        self.sensitivity = sensitivity
+        if retention_days is not None:
+            self.retention_until = self.created_at + timedelta(days=retention_days)
+        self.updated_at = datetime.utcnow()
+
+    def is_expired(self, now: datetime | None = None) -> bool:
+        if self.retention_until is None:
+            return False
+        return (now or datetime.utcnow()) >= self.retention_until
 
     def mark_processing(self) -> None:
         self.status = DocumentStatus.PROCESSING
@@ -105,6 +127,12 @@ class DocumentChunk:
     tags: list[str] = field(default_factory=list)
     file_type: str | None = None
     document_name: str | None = None
+
+    # Denormalized from Document.sensitivity at ingestion time for the same
+    # reason as the fields above: retrieval must be able to filter on
+    # classification inside Qdrant/Elasticsearch, before any candidate
+    # reaches the application, without a join back to `documents`.
+    sensitivity: Sensitivity = Sensitivity.INTERNAL
 
     @property
     def content_hash(self) -> str:

@@ -19,6 +19,11 @@ class Citation:
     chunk_id: uuid.UUID
     page_number: int | None = None
     section: str | None = None
+    # Completes the provenance chain answer -> chunk -> document. Without it
+    # a citation identifies its source only by display name, which is neither
+    # unique nor stable, and there is no way to invalidate cached answers
+    # when the document behind them is deleted (see semantic cache purge).
+    document_id: uuid.UUID | None = None
 
 
 @dataclass

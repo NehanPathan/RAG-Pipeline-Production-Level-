@@ -8,6 +8,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 from src.ingestion.embedders.base import EmbeddingProvider
 from src.monitoring.logger import get_logger
+from src.monitoring.prometheus_metrics import embedding_cache_hits
 
 logger = get_logger(__name__)
 
@@ -94,9 +95,15 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         return f"embedding:{content_hash}"
 
     async def _get_cached(self, text: str) -> list[float] | None:
+        # Every cached read -- ingestion batches and query embeddings alike --
+        # funnels through here, so this is the one place that can report the
+        # true hit rate. That rate is a direct cost control: each miss is a
+        # billed embedding call.
         if self._cache is None:
+            embedding_cache_hits.labels(result="disabled").inc()
             return None
         data = await self._cache.get(self._cache_key(text))
+        embedding_cache_hits.labels(result="hit" if data is not None else "miss").inc()
         if data is not None:
             return data
         return None

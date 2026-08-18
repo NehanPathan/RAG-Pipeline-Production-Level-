@@ -1,4 +1,5 @@
-.PHONY: help dev build test lint type-check migrate seed clean logs stop
+.PHONY: help dev build test lint type-check migrate seed clean logs stop \
+        governance-check eval-gate retention-dry-run
 
 help:
 	@echo "Enterprise Agentic RAG Platform"
@@ -15,6 +16,11 @@ help:
 	@echo "  make stop         Stop all services"
 	@echo "  make clean        Remove containers, volumes, and cache"
 	@echo "  make install      Install Python dependencies with uv"
+	@echo ""
+	@echo "Governance (GM3):"
+	@echo "  make governance-check    Validate risk register vs metrics, controls, alerts"
+	@echo "  make eval-gate           Fail if quality is below the policy floors"
+	@echo "  make retention-dry-run   List documents past their retention deadline"
 
 install:
 	uv sync --all-extras
@@ -50,6 +56,15 @@ seed:
 create-admin:
 	uv run python scripts/create_admin.py
 
+governance-check:
+	uv run python scripts/check_governance.py
+
+eval-gate:
+	uv run python scripts/eval_gate.py --from-api $(or $(API),http://localhost:8000) --dataset $(or $(DATASET),golden_set_v1)
+
+retention-dry-run:
+	curl -s -X POST "$(or $(API),http://localhost:8000)/api/v1/governance/retention/run?dry_run=true" -H "X-User-Id: 00000000-0000-0000-0000-000000000001"
+
 lint:
 	uv run ruff check src tests --fix
 
@@ -83,6 +98,6 @@ api:
 ui:
 	uv run streamlit run src/ui/app.py --server.port 8501
 
-ci: lint-check type-check test
+ci: lint-check type-check test governance-check
 
 .DEFAULT_GOAL := help

@@ -43,15 +43,21 @@ from src.evaluation.offline.metrics import (  # noqa: E402
     score_context_relevancy,
     score_faithfulness,
 )
-from src.infrastructure.database.postgres.chunk_repository import PostgresChunkRepository  # noqa: E402
+from src.infrastructure.database.postgres.chunk_repository import (
+    PostgresChunkRepository,  # noqa: E402
+)
 from src.infrastructure.database.postgres.connection import get_session_factory  # noqa: E402
-from src.infrastructure.database.postgres.document_repository import PostgresDocumentRepository  # noqa: E402
+from src.infrastructure.database.postgres.document_repository import (
+    PostgresDocumentRepository,  # noqa: E402
+)
 from src.infrastructure.database.redis.connection import RedisCache, get_redis_client  # noqa: E402
 from src.infrastructure.search.elasticsearch.repository import (  # noqa: E402
     ElasticsearchSearchRepository,
     create_elasticsearch_client,
 )
-from src.infrastructure.vector_store.qdrant.cache_repository import QdrantSemanticCacheRepository  # noqa: E402
+from src.infrastructure.vector_store.qdrant.cache_repository import (
+    QdrantSemanticCacheRepository,  # noqa: E402
+)
 from src.infrastructure.vector_store.qdrant.repository import (  # noqa: E402
     QdrantVectorRepository,
     create_qdrant_client,
@@ -59,7 +65,10 @@ from src.infrastructure.vector_store.qdrant.repository import (  # noqa: E402
 from src.ingestion.chunkers.chunk_validator import ChunkValidator  # noqa: E402
 from src.ingestion.chunkers.chunking_strategy import ParentChildOnlyStrategy  # noqa: E402
 from src.ingestion.chunkers.hybrid_chunking_pipeline import HybridChunkingPipeline  # noqa: E402
-from src.ingestion.chunkers.parent_child_chunker import ChunkingConfig, ParentChildChunker  # noqa: E402
+from src.ingestion.chunkers.parent_child_chunker import (  # noqa: E402
+    ChunkingConfig,
+    ParentChildChunker,
+)
 from src.ingestion.chunkers.semantic_chunker import SemanticChunker  # noqa: E402
 from src.ingestion.chunkers.structure_chunker import StructureChunker  # noqa: E402
 from src.ingestion.embedders.embedding_strategy import EmbeddingStrategy  # noqa: E402

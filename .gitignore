@@ -5,6 +5,22 @@
 .env.*
 !.env.example
 
+# Service-account credentials and any other secret material. A committed
+# Firebase service account is a full compromise of the project's auth: the
+# private key signs tokens for every user, so it must never reach the repo.
+# The whole directory is ignored (with a keep-file exception) rather than
+# just the known filename, so a differently-named credential dropped in
+# beside it is covered too.
+config/*
+!config/.gitkeep
+!config/README.md
+*service-account*.json
+*serviceaccount*.json
+*-credentials.json
+*.pem
+*.key
+!**/node_modules/**/*.key
+
 # ====================================================
 # Python
 # ====================================================

@@ -3,11 +3,16 @@ from __future__ import annotations
 import os
 import time
 
-import httpx
+from src.ui import http as httpx
+from src.ui.auth import require_auth
 import plotly.graph_objects as go
 import streamlit as st
 
 st.set_page_config(page_title="Evaluation Dashboard", layout="wide")
+
+# Gate before rendering anything: Streamlit's multipage nav lists every
+# page regardless of sign-in state, so each page must check for itself.
+require_auth()
 st.title("Evaluation Dashboard")
 
 API_BASE = os.getenv("API_BASE_URL", "http://localhost:8000")
@@ -70,7 +75,6 @@ with tab_overview:
             f"Completed: **{latest.get('completed_at', '—')}**"
         )
 
-        # KPI cards
         kpi_keys = list(METRIC_LABELS.keys())
         cols = st.columns(len(kpi_keys))
         for col, key in zip(cols, kpi_keys):

@@ -32,6 +32,42 @@ class MetadataFilterSpec:
     date_to: date | None = None
     custom: dict[str, str] = field(default_factory=dict)
 
+    # Governance MAP: the classification allow-list derived from the caller's
+    # clearance. Unlike every other field here this one is NOT produced by
+    # FilterGenerator -- QueryPipeline overwrites it from the Principal on
+    # every retrieval (see `apply_clearance`). An access-control filter that
+    # an LLM can influence is not an access-control filter.
+    sensitivity_in: list[str] | None = None
+
+    def apply_clearance(self, allowed_values: list[str]) -> None:
+        """Force the classification allow-list, discarding any prior value."""
+        self.sensitivity_in = list(allowed_values)
+
+    @property
+    def has_soft_filters(self) -> bool:
+        """Whether any LLM-inferred narrowing filter is set.
+
+        "Soft" means inferred rather than asserted: FilterGenerator guesses a
+        domain and tags from the wording of the question, with no knowledge of
+        which values actually exist in the corpus.
+        """
+        return bool(self.domain or self.tags or self.file_type)
+
+    def security_only(self) -> MetadataFilterSpec:
+        """A copy keeping only the filters that must never be relaxed.
+
+        Tenant (`user_id`) and classification (`sensitivity_in`) are access
+        controls; domain/tags/file_type are precision hints. Retrieval can
+        safely retry without the hints, and must never retry without the
+        controls -- which is why this returns a narrowed copy rather than
+        letting a caller clear fields ad hoc.
+        """
+        return MetadataFilterSpec(
+            user_id=self.user_id,
+            document_ids=self.document_ids,
+            sensitivity_in=self.sensitivity_in,
+        )
+
     def to_vector_filter(self) -> VectorSearchFilter:
         self._warn_unsupported()
         return VectorSearchFilter(
@@ -40,6 +76,7 @@ class MetadataFilterSpec:
             tags=self.tags,
             file_type=self.file_type,
             document_ids=self.document_ids,
+            sensitivity_in=self.sensitivity_in,
         )
 
     def to_bm25_filter(self) -> BM25SearchFilter:
@@ -50,6 +87,7 @@ class MetadataFilterSpec:
             tags=self.tags,
             file_type=self.file_type,
             document_ids=self.document_ids,
+            sensitivity_in=self.sensitivity_in,
         )
 
     def _warn_unsupported(self) -> None:

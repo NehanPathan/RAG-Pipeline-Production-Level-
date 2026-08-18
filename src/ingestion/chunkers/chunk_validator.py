@@ -40,12 +40,24 @@ class ChunkValidator:
         self, chunks: list[DocumentChunk], ocr_confidence: float | None = None
     ) -> ValidationResult:
         result = ValidationResult()
-        seen_hashes: set[str] = set()
+
+        # Deduplication is scoped *per chunk type*, not across all chunks.
+        #
+        # Parent/child splitting makes children whose text is a substring of the
+        # parent, and for a short section byte-identical to it -- so one shared hash
+        # set saw the parent first and rejected its only child as a duplicate.
+        #
+        # Silently fatal: parents are never embedded, so any document short enough to
+        # fit one child window ended up with zero vectors and invisible to semantic
+        # search, while keyword search still found the parent and made it look
+        # indexed. A child duplicating another child is still rejected.
+        seen_by_type: dict[str, set[str]] = {}
 
         for chunk in chunks:
-            reason = self._reject_reason(chunk, ocr_confidence, seen_hashes)
+            seen = seen_by_type.setdefault(chunk.chunk_type.value, set())
+            reason = self._reject_reason(chunk, ocr_confidence, seen)
             if reason is None:
-                seen_hashes.add(chunk.content_hash)
+                seen.add(chunk.content_hash)
                 result.valid.append(chunk)
             else:
                 result.rejected.append((chunk, reason))

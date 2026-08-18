@@ -1,6 +1,6 @@
 import uuid
 
-from src.domain.entities.document import DocumentChunk
+from src.domain.entities.document import ChunkType, DocumentChunk
 from src.ingestion.chunkers.chunk_validator import ChunkValidator
 
 
@@ -56,3 +56,55 @@ def test_high_ocr_confidence_does_not_reject():
         [_chunk("This text looks totally fine on its own.")], ocr_confidence=0.9
     )
     assert len(result.valid) == 1
+
+
+class TestParentChildDeduplication:
+    """Regression: a short section produces a child whose text is identical to
+    its parent, and rejecting it as a duplicate left the document with no
+    embeddable chunks at all."""
+
+    @staticmethod
+    def _chunk(content: str, chunk_type: ChunkType) -> DocumentChunk:
+        return DocumentChunk(
+            document_id=uuid.uuid4(), content=content, position=0, chunk_type=chunk_type
+        )
+
+    def test_child_identical_to_parent_is_kept(self):
+        text = "Enterprise customers in the EU have a 60 day refund window."
+        chunks = [
+            self._chunk(text, ChunkType.PARENT),
+            self._chunk(text, ChunkType.CHILD),
+        ]
+
+        result = ChunkValidator().validate(chunks)
+
+        assert len(result.valid) == 2, "the child must survive; only children get embedded"
+        assert {c.chunk_type for c in result.valid} == {ChunkType.PARENT, ChunkType.CHILD}
+
+    def test_short_document_yields_an_embeddable_chunk(self):
+        """The property that actually matters: something embeddable survives."""
+        text = "A short policy note that fits inside a single child window."
+        result = ChunkValidator().validate(
+            [self._chunk(text, ChunkType.PARENT), self._chunk(text, ChunkType.CHILD)]
+        )
+        embeddable = [
+            c for c in result.valid
+            if c.chunk_type in (ChunkType.CHILD, ChunkType.TABLE, ChunkType.STANDALONE)
+        ]
+        assert embeddable, "no embeddable chunk means the document is invisible to vector search"
+
+    def test_duplicate_children_are_still_rejected(self):
+        text = "Repeated boilerplate paragraph appearing twice in one document."
+        result = ChunkValidator().validate(
+            [self._chunk(text, ChunkType.CHILD), self._chunk(text, ChunkType.CHILD)]
+        )
+        assert len(result.valid) == 1
+        assert result.rejected[0][1] == "duplicate"
+
+    def test_duplicate_parents_are_still_rejected(self):
+        text = "Repeated boilerplate paragraph appearing twice in one document."
+        result = ChunkValidator().validate(
+            [self._chunk(text, ChunkType.PARENT), self._chunk(text, ChunkType.PARENT)]
+        )
+        assert len(result.valid) == 1
+        assert result.rejected[0][1] == "duplicate"

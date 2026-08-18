@@ -3,8 +3,15 @@ from __future__ import annotations
 import uuid
 
 from src.config import get_settings
+from src.evaluation.online.feedback import FeedbackService
+from src.evaluation.online.sampler import OnlineEvaluator
+from src.governance.policy import PolicyViolationError, get_policy
+from src.governance.sensitivity_guard import SensitivityGuard
 from src.infrastructure.database.postgres.chunk_repository import PostgresChunkRepository
 from src.infrastructure.database.postgres.connection import get_session_factory
+from src.infrastructure.database.postgres.conversation_repository import (
+    PostgresConversationRepository,
+)
 from src.infrastructure.database.postgres.document_intelligence_repository import (
     PostgresDocumentIntelligenceRepository,
 )
@@ -41,11 +48,6 @@ from src.ingestion.parsing.intelligence_recorder import DocumentIntelligenceReco
 from src.ingestion.parsing.parsing_orchestrator import DocumentParsingService
 from src.ingestion.pipeline import IngestionPipeline
 from src.llm.registry import get_llm_provider
-
-# Stand-in for the user identity real auth middleware (not yet built, see
-# chat.py's `user_id` comment) will derive from a JWT. Used so documents
-# have a valid FK to `users` until per-user auth is wired.
-DEFAULT_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 from src.retrieval.agents.filter_generator import FilterGenerator
 from src.retrieval.agents.intent_classifier import IntentClassifier
 from src.retrieval.agents.query_agent import QueryAgent
@@ -73,6 +75,13 @@ from src.retrieval.pipeline import QueryPipeline
 from src.retrieval.rerankers.registry import get_reranker
 from src.retrieval.searchers.bm25_searcher import BM25Searcher
 from src.retrieval.searchers.vector_searcher import VectorSearcher
+from src.routing.classifier import RouteClassifier
+from src.routing.router import QueryRouter
+from src.tools.registry import load_builtin_tools
+
+# DEFAULT_USER_ID now lives in src/governance/rbac.py: the auth seam should
+# not depend on the retrieval object graph this module builds, and importing
+# it from here pulled that whole graph into anything that needed the constant.
 
 _embedder: EmbeddingProvider | None = None
 _vector_repo: QdrantVectorRepository | None = None
@@ -133,6 +142,16 @@ async def ensure_cache_collection() -> None:
     so it must be ensured once at startup instead.
     """
     await _get_cache_repo().create_collection_if_not_exists(_get_embedder().dimensions)
+
+
+async def ensure_governance_indexes() -> None:
+    """Add the `sensitivity` payload index to a pre-existing collection.
+
+    `create_collection_if_not_exists` only indexes fields when it actually
+    creates the collection, so a deployment that already had
+    `document_chunks` would run the classification filter unindexed.
+    """
+    await _get_vector_repo().ensure_governance_indexes()
 
 
 _query_pipeline: QueryPipeline | None = None
@@ -217,6 +236,33 @@ def _build_query_pipeline() -> QueryPipeline:
         score_threshold=settings.semantic_cache_score_threshold,
     )
 
+    policy = get_policy()
+
+    # GOVERN (C-GOV-01/02): fail loudly at construction if configuration
+    # points at an unapproved model. Catching this at startup rather than on
+    # the first request means an unreviewed model swap cannot quietly serve
+    # traffic until someone notices in a dashboard a week later.
+    for provider_name in {settings.small_llm_provider, settings.large_llm_provider}:
+        decision = policy.check_llm_provider(provider_name)
+        if decision.denied:
+            raise PolicyViolationError(decision)
+
+    embedding_decision = policy.check_embedding_model(embedder.model_id)
+    if embedding_decision.denied:
+        raise PolicyViolationError(embedding_decision)
+
+    # Tools must be registered before the router is built: the classifier's
+    # prompt is generated from the live registry, so an empty registry would
+    # produce a router that never selects a tool.
+    load_builtin_tools()
+
+    router = QueryRouter(
+        classifier=RouteClassifier(
+            llm_provider=small_llm, min_confidence=settings.router_min_confidence
+        ),
+        rules_only=settings.router_rules_only,
+    )
+
     return QueryPipeline(
         query_agent=query_agent,
         hybrid_retriever=hybrid_retriever,
@@ -228,7 +274,54 @@ def _build_query_pipeline() -> QueryPipeline:
         vector_top_k=settings.vector_search_top_k,
         bm25_top_k=settings.bm25_search_top_k,
         rerank_top_n=settings.rerank_top_n,
+        sensitivity_guard=SensitivityGuard(policy.default_sensitivity),
+        policy=policy,
+        router=router,
+        # General-knowledge answers use the large model: they carry no
+        # retrieved context, so the model's own quality is all there is.
+        direct_llm=large_llm,
     )
+
+
+_conversation_repository: PostgresConversationRepository | None = None
+_feedback_service: FeedbackService | None = None
+_online_evaluator: OnlineEvaluator | None = None
+
+
+def get_conversation_repository() -> PostgresConversationRepository:
+    global _conversation_repository
+    if _conversation_repository is None:
+        _conversation_repository = PostgresConversationRepository(get_session_factory())
+    return _conversation_repository
+
+
+def get_feedback_service() -> FeedbackService:
+    global _feedback_service
+    if _feedback_service is None:
+        _feedback_service = FeedbackService(
+            session_factory=get_session_factory(),
+            conversation_repo=get_conversation_repository(),
+        )
+    return _feedback_service
+
+
+def get_online_evaluator() -> OnlineEvaluator:
+    """Judge for sampled live traffic.
+
+    Uses the `small` LLM role: online scoring runs on a fraction of every
+    request, so a large-model judge would cost more than the answers it
+    grades. The offline runner uses the same role, keeping the two sets of
+    numbers on one scale.
+    """
+    global _online_evaluator
+    if _online_evaluator is None:
+        settings = get_settings()
+        _online_evaluator = OnlineEvaluator(
+            scorer_llm=get_llm_provider(settings, role="small"),
+            session_factory=get_session_factory(),
+            sample_rate=settings.governance_online_eval_sample_rate,
+        )
+    return _online_evaluator
 
 
 _document_repository: PostgresDocumentRepository | None = None

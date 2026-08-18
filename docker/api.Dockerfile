@@ -40,8 +40,20 @@ RUN groupadd -r raguser && useradd -r -g raguser -m -d /home/raguser raguser \
 COPY --from=builder --chown=raguser:raguser /app/.venv /app/.venv
 COPY --chown=raguser:raguser src/ ./src/
 COPY --chown=raguser:raguser alembic.ini ./
+# Runtime configuration, not documentation -- src/governance/risk_register.py
+# reads this to serve /governance/risks and /governance/status.
+COPY --chown=raguser:raguser docs/governance/risk_register.yaml ./docs/governance/risk_register.yaml
 
 RUN mkdir -p /app/uploads && chown raguser:raguser /app/uploads
+
+# Create the model-cache directory *in the image* and give it to raguser.
+# A named volume mounted over a path that does not exist in the image is
+# created root-owned, and this container runs as a non-root user -- which
+# fails at startup with EACCES on the first HuggingFace download. Docker
+# seeds a fresh named volume from the image's directory (contents and
+# ownership), so creating it here is what makes the mount writable.
+RUN mkdir -p /home/raguser/.cache/huggingface \
+    && chown -R raguser:raguser /home/raguser/.cache
 
 ENV PATH="/app/.venv/bin:$PATH"
 ENV PYTHONPATH="/app"

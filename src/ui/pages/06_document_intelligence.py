@@ -1,11 +1,16 @@
 import os
 from collections import defaultdict
 
-import httpx
+from src.ui import http as httpx
+from src.ui.auth import require_auth
 import plotly.graph_objects as go
 import streamlit as st
 
 st.set_page_config(page_title="Document Intelligence", layout="wide")
+
+# Gate before rendering anything: Streamlit's multipage nav lists every
+# page regardless of sign-in state, so each page must check for itself.
+require_auth()
 st.title("Document Intelligence")
 st.caption(
     "OCR output, extracted layout, semantic chunk boundaries, chunk hierarchy, "

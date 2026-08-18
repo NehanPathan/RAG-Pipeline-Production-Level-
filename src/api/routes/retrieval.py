@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-import uuid
-
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from src.api.dependencies import get_query_pipeline
 from src.application.use_cases.inspect_retrieval import InspectRetrievalUseCase
+from src.governance.rbac import Principal, get_principal
 from src.monitoring.logger import get_logger
+from src.monitoring.tracing import get_current_trace_id
 from src.retrieval.pipeline import RetrievalInspection
 
 router = APIRouter()
@@ -16,20 +16,32 @@ logger = get_logger(__name__)
 
 class RetrievalInspectRequest(BaseModel):
     query: str
-    user_id: str | None = None
 
 
 @router.post("/retrieval/inspect")
-async def inspect_retrieval(request: RetrievalInspectRequest) -> dict:
+async def inspect_retrieval(
+    request: RetrievalInspectRequest,
+    principal: Principal = Depends(get_principal),
+) -> dict:
     """Full debug retrieval run -- Modules A-D only, no answer generation.
     Matches the payload shape documented in 07_api_design.md.
+
+    Subject to the same clearance filter as /chat. A debug endpoint that
+    returns raw chunk content while bypassing classification would be the
+    easiest way in the system to read documents you are not cleared for --
+    the request-body `user_id` it previously accepted is gone for the same
+    reason.
     """
-    logger.info("retrieval_inspect_request", query=request.query[:100])
+    logger.info(
+        "retrieval_inspect_request",
+        query=request.query[:100],
+        clearance=principal.clearance.value,
+    )
 
     use_case = InspectRetrievalUseCase(pipeline=get_query_pipeline())
-    user_id = uuid.UUID(request.user_id) if request.user_id else None
-
-    result = await use_case.execute(request.query, user_id=user_id)
+    result = await use_case.execute(
+        request.query, user_id=principal.user_id, principal=principal
+    )
     return _to_response(result)
 
 
@@ -90,5 +102,12 @@ def _to_response(result: RetrievalInspection) -> dict:
             "fusion_ms": result.trace.fusion_ms,
             "reranking_ms": result.trace.reranking_ms,
             "total_ms": result.trace.total_ms,
+        },
+        # Surfaced so the Retrieval Inspector can distinguish "nothing
+        # matched" from "matches existed but your clearance excluded them" --
+        # otherwise a classification filter looks identical to a retrieval bug.
+        "governance": {
+            "blocked_by_clearance": result.blocked_by_clearance,
+            "trace_id": get_current_trace_id(),
         },
     }

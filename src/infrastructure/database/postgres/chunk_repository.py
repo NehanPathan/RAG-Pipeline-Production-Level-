@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.domain.entities.document import ChunkMetadata, ChunkType, DocumentChunk
 from src.domain.repositories.document_repository import ChunkRepository
+from src.domain.value_objects.sensitivity import Sensitivity
 from src.infrastructure.database.postgres.models import DocumentChunkModel
 
 
@@ -44,6 +45,7 @@ class PostgresChunkRepository(ChunkRepository):
                         semantic_cluster=chunk.chunk_metadata.semantic_cluster,
                         ocr_confidence=chunk.chunk_metadata.ocr_confidence,
                         language=chunk.chunk_metadata.language,
+                        sensitivity=chunk.sensitivity.value,
                     )
                 )
             await session.commit()
@@ -108,4 +110,5 @@ def _to_entity(model: DocumentChunkModel) -> DocumentChunk:
         ),
         qdrant_point_id=model.qdrant_point_id,
         created_at=model.created_at,
+        sensitivity=Sensitivity.parse(model.sensitivity, Sensitivity.INTERNAL),
     )

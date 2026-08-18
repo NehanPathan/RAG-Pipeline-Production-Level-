@@ -10,18 +10,26 @@ logger = get_logger(__name__)
 _SCORE_RE = re.compile(r"\b([0-9](?:\.[0-9]+)?|10(?:\.0+)?)\b")
 
 
-def _parse_score(text: str) -> float:
-    """Extract the first 0-10 number from an LLM response and normalise to 0-1."""
+def _parse_score(text: str) -> float | None:
+    """Extract the first 0-10 number from an LLM response, normalised to 0-1.
+
+    Returns None when the response contains no parseable score. The previous
+    behaviour returned 0.5, which silently invented a middling result and
+    made an unparseable judge response indistinguishable from a genuinely
+    mediocre answer -- exactly the confusion an evaluation system exists to
+    prevent. Callers exclude None from aggregation rather than averaging it in.
+    """
     m = _SCORE_RE.search(text.strip())
     if not m:
-        return 0.5
+        logger.warning("score_unparseable", response=text.strip()[:120])
+        return None
     raw = float(m.group(1))
     return min(max(raw / 10.0, 0.0), 1.0)
 
 
 async def score_faithfulness(
     llm: LLMProvider, answer: str, contexts: list[str]
-) -> float:
+) -> float | None:
     """0-1: answer is only grounded in the retrieved contexts (no hallucination)."""
     context_block = "\n---\n".join(contexts[:8])  # cap to avoid huge prompts
     prompt = f"""You are an impartial RAG quality evaluator.
@@ -43,12 +51,12 @@ Respond with a single number from 0 to 10."""
         return _parse_score(resp)
     except Exception as exc:
         logger.warning("faithfulness_score_failed", error=str(exc))
-        return 0.0
+        return None
 
 
 async def score_answer_relevancy(
     llm: LLMProvider, question: str, answer: str
-) -> float:
+) -> float | None:
     """0-1: answer directly addresses the question."""
     prompt = f"""You are an impartial RAG quality evaluator.
 
@@ -69,12 +77,12 @@ Respond with a single number from 0 to 10."""
         return _parse_score(resp)
     except Exception as exc:
         logger.warning("answer_relevancy_score_failed", error=str(exc))
-        return 0.0
+        return None
 
 
 async def score_answer_correctness(
     llm: LLMProvider, question: str, answer: str, ground_truth: str
-) -> float:
+) -> float | None:
     """0-1: answer matches the ground-truth reference (requires ground_truth)."""
     prompt = f"""You are an impartial RAG quality evaluator.
 
@@ -98,12 +106,12 @@ Respond with a single number from 0 to 10."""
         return _parse_score(resp)
     except Exception as exc:
         logger.warning("answer_correctness_score_failed", error=str(exc))
-        return 0.0
+        return None
 
 
 async def score_context_relevancy(
     llm: LLMProvider, question: str, contexts: list[str]
-) -> float:
+) -> float | None:
     """0-1: retrieved contexts are relevant to the question."""
     context_block = "\n---\n".join(contexts[:6])
     prompt = f"""You are an impartial RAG quality evaluator.
@@ -125,4 +133,4 @@ Respond with a single number from 0 to 10."""
         return _parse_score(resp)
     except Exception as exc:
         logger.warning("context_relevancy_score_failed", error=str(exc))
-        return 0.0
+        return None

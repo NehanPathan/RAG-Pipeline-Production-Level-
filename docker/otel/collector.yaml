@@ -1,0 +1,60 @@
+# OpenTelemetry Collector — the endpoint src/monitoring/tracing.py exports to.
+#
+# Without a collector listening on 4317, configure_tracing() installs a
+# BatchSpanProcessor that fails to export on every flush, which is how a
+# fully-instrumented pipeline can produce no traces while looking healthy.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 5s
+    send_batch_size: 512
+  # A runaway trace volume must degrade the collector, not the API. The
+  # limiter sheds spans rather than letting memory grow unbounded.
+  memory_limiter:
+    check_interval: 2s
+    limit_mib: 384
+    spike_limit_mib: 96
+
+exporters:
+  # Default backend: spans are printed by the collector. Swap this for
+  # otlp/jaeger, otlp/tempo, or a vendor exporter without touching the app --
+  # the app only ever knows about the collector.
+  debug:
+    verbosity: basic
+
+  # Span-derived RED metrics, scraped by Prometheus alongside the API's own.
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    resource_to_telemetry_conversion:
+      enabled: true
+
+connectors:
+  spanmetrics:
+    histogram:
+      explicit:
+        buckets: [10ms, 50ms, 100ms, 250ms, 500ms, 1s, 2.5s, 5s, 10s, 30s]
+    dimensions:
+      - name: stage
+      - name: trace_id
+
+service:
+  telemetry:
+    metrics:
+      address: 0.0.0.0:8888
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [debug, spanmetrics]
+    metrics/spanmetrics:
+      receivers: [spanmetrics]
+      processors: [batch]
+      exporters: [prometheus]

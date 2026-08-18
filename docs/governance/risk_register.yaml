@@ -1,0 +1,792 @@
+# Machine-readable risk register (NIST AI RMF — MAP function).
+#
+# This file is not documentation that happens to be in YAML. It is validated
+# by `scripts/check_governance.py` in CI, which fails the build when:
+#   - a risk names a metric that no longer exists in prometheus_metrics.py
+#   - a control names an `implemented_in` path that no longer exists
+#   - a risk has no owner, no metric, or no controls
+#
+# That validation is the point. A hand-maintained risk document drifts from
+# the code within weeks and then quietly asserts controls that were deleted;
+# this one cannot, because the assertion is checked on every push.
+#
+# Each risk answers three questions:
+#   what can go wrong          -> description
+#   how would we know          -> metric (+ threshold)
+#   what stops it              -> controls (+ where they live)
+
+version: "1.3.0"
+
+risks:
+  # ---------------------------------------------------------------- MEASURE
+
+  - id: R-T01
+    title: LLM hallucination in generated answers
+    function: measure
+    severity: critical
+    likelihood: probable
+    owner: platform-team
+    description: >-
+      The generator produces claims not supported by the retrieved context.
+      Most dangerous on policy, legal and financial documents, where a
+      confident, well-formatted, wrong answer is more harmful than a refusal.
+    metric: rag_citation_validation_total
+    threshold: 0.05
+    threshold_direction: max
+    controls:
+      - id: C-GOV-04
+        description: >-
+          Answers citing none of the retrieved passages are refused in
+          enforce mode, counted in monitor mode.
+        implemented_in:
+          - src/governance/policy.py
+          - src/retrieval/pipeline.py
+      - id: C-MEA-02
+        description: >-
+          CitationValidator discards citation markers pointing at chunks that
+          were never in context, and counts each one -- the clearest
+          hallucination signal available without a judge.
+        implemented_in:
+          - src/retrieval/answer/citation_validator.py
+      - id: C-MEA-03
+        description: >-
+          Faithfulness is scored offline on the golden set and online on a
+          sample of live traffic, with the same judge prompts so the two are
+          comparable.
+        implemented_in:
+          - src/evaluation/offline/metrics.py
+          - src/evaluation/online/sampler.py
+      - id: C-GOV-19
+        description: >-
+          A semantic cache hit is rejected unless the numeric literals in the
+          question match the cached question exactly. Similarity cannot
+          express "these numbers must be identical" -- one changed digit
+          leaves two factually different questions well above any sane
+          threshold -- so the cache would otherwise answer "revenue in 2024"
+          with the 2023 answer, at full confidence and with real citations.
+        implemented_in:
+          - src/retrieval/cache/semantic_cache.py
+    residual_risk: >-
+      Moderate. A model can still produce an unsupported claim while citing a
+      real passage; citation validity is necessary but not sufficient for
+      groundedness, which is why the judge metric runs alongside it. The cache
+      guard covers numeric differences only: two questions differing by a
+      non-numeric detail ("EU" vs "US") can still collide above threshold.
+
+  - id: R-T02
+    title: Retrieval miss — relevant passages not returned
+    function: measure
+    severity: high
+    likelihood: occasional
+    owner: retrieval-team
+    description: >-
+      Hybrid search fails to surface the passages that contain the answer, so
+      the system answers incompletely or refuses despite the corpus holding
+      the information.
+    metric: rag_retrieval_empty_total
+    threshold: 0.15
+    threshold_direction: max
+    controls:
+      - id: C-MEA-04
+        description: >-
+          Empty post-rerank result sets are counted separately from low-quality
+          ones, so coverage loss is visible before answer quality moves.
+        implemented_in:
+          - src/retrieval/pipeline.py
+      - id: C-MEA-05
+        description: >-
+          context_relevancy is scored on every evaluated sample and gated at
+          the policy floor.
+        implemented_in:
+          - src/evaluation/offline/metrics.py
+      - id: C-MEA-06
+        description: >-
+          The Retrieval Inspector reports how many candidates were withheld by
+          clearance, so a classification filter is never mistaken for a
+          retrieval bug.
+        implemented_in:
+          - src/api/routes/retrieval.py
+    residual_risk: Low-moderate. Query expansion and hybrid search reduce but do not eliminate misses.
+
+  - id: R-T05
+    title: Answer quality drifts without anyone noticing
+    function: measure
+    severity: high
+    likelihood: probable
+    owner: platform-team
+    description: >-
+      Model updates, prompt edits, corpus growth and reranker changes each move
+      quality gradually. Offline runs on a fixed golden set are periodic and
+      unrepresentative of live questions, so drift on real traffic can persist
+      undetected between runs.
+    metric: rag_online_eval_score
+    threshold: 0.75
+    threshold_direction: min
+    controls:
+      - id: C-MEA-01
+        description: >-
+          Policy quality floors are enforced identically by the CI gate, the
+          runtime alert and the evaluation dashboard, from one definition.
+        implemented_in:
+          - src/governance/policy.py
+          - scripts/eval_gate.py
+      - id: C-MEA-07
+        description: >-
+          A deterministic sample of live answers is judged continuously and
+          published to Prometheus.
+        implemented_in:
+          - src/evaluation/online/sampler.py
+      - id: C-MEA-08
+        description: >-
+          Every run records the retrieval configuration actually in force, so a
+          score change can be attributed to a config change.
+        implemented_in:
+          - src/retrieval/pipeline.py
+          - src/evaluation/offline/runner.py
+    residual_risk: Low. Sampling rate bounds detection latency; raise it if drift must be caught faster.
+
+  # -------------------------------------------------------------------- MAP
+
+  - id: R-S01
+    title: Over-classified content reaches an under-cleared user
+    function: map
+    severity: critical
+    likelihood: occasional
+    owner: security-team
+    description: >-
+      A confidential or restricted passage is retrieved for, and summarised to,
+      a user without the corresponding clearance. Especially likely for chunks
+      indexed before classification existed, which carry no label at all.
+    metric: rag_retrieval_blocked_chunks_total
+    threshold: 0.0
+    threshold_direction: max
+    controls:
+      - id: C-MAP-01
+        description: >-
+          The clearance allow-list is pushed into the Qdrant and Elasticsearch
+          filters before search runs, and is derived from the resolved
+          principal -- never from the query or from FilterGenerator's output.
+        implemented_in:
+          - src/domain/value_objects/metadata_filter.py
+          - src/infrastructure/vector_store/qdrant/repository.py
+          - src/infrastructure/search/elasticsearch/repository.py
+          - src/retrieval/pipeline.py
+      - id: C-MAP-03
+        description: >-
+          SensitivityGuard re-checks every returned candidate in process, and
+          anything it drops is counted as a defect rather than filtered
+          silently.
+        implemented_in:
+          - src/governance/sensitivity_guard.py
+      - id: C-MAP-04
+        description: >-
+          Unlabelled data fails closed: a missing or unrecognised value
+          resolves to `internal`, never to `public`.
+        implemented_in:
+          - src/domain/value_objects/sensitivity.py
+    residual_risk: >-
+      Low. Both enforcement points must fail together for a leak, and the
+      document listing now filters inside the SQL query (see R-S04) so counts
+      and page lengths no longer disclose unreadable documents either.
+
+  - id: R-S02
+    title: Deleted data remains reachable
+    function: map
+    severity: high
+    likelihood: occasional
+    owner: security-team
+    description: >-
+      A document is deleted from Postgres but survives in one of the three
+      other stores that hold derivatives of it, so it keeps answering
+      questions. The semantic cache was exactly this gap: it holds whole
+      generated answers and was never invalidated on delete.
+    metric: rag_audit_events_total
+    controls:
+      - id: C-MAP-05
+        description: >-
+          Deletion fans out across Postgres, Qdrant, Elasticsearch and the
+          semantic cache in one route.
+        implemented_in:
+          - src/api/routes/documents.py
+          - src/infrastructure/vector_store/qdrant/cache_repository.py
+      - id: C-MAP-02
+        description: >-
+          Reclassification re-indexes every chunk and invalidates cached
+          answers, so a label change actually changes behaviour.
+        implemented_in:
+          - src/api/routes/documents.py
+      - id: C-MAN-03
+        description: Retention deadlines are enforced by a job, not just recorded.
+        implemented_in:
+          - src/governance/retention.py
+    residual_risk: >-
+      Low. Cache entries written before source_document_ids existed carry no
+      provenance and survive invalidation; that residue decays with cache
+      churn and is stated in the data card.
+
+  # ----------------------------------------------------------------- GOVERN
+
+  - id: R-G01
+    title: Unapproved model or configuration serving production traffic
+    function: govern
+    severity: high
+    likelihood: occasional
+    owner: platform-team
+    description: >-
+      An environment variable change swaps the generator, embedding model or
+      reranker without review. Because embeddings and reranking are invisible
+      in the response, this can run for weeks before anyone notices.
+    metric: rag_policy_violations_total
+    threshold: 0.5
+    threshold_direction: max
+    controls:
+      - id: C-GOV-01
+        description: >-
+          The LLM provider allow-list is checked when the pipeline is
+          constructed, so an unapproved provider fails at startup rather than
+          on the first request.
+        implemented_in:
+          - src/governance/policy.py
+          - src/api/dependencies.py
+      - id: C-GOV-02
+        description: The embedding model allow-list is checked the same way.
+        implemented_in:
+          - src/governance/policy.py
+          - src/api/dependencies.py
+      - id: C-GOV-05
+        description: >-
+          Settings changes persist and are audited with before/after values;
+          they previously returned success without writing anything.
+        implemented_in:
+          - src/api/routes/admin.py
+    residual_risk: Low. The allow-list itself is config, so widening it is a reviewable diff.
+
+  - id: R-G02
+    title: Actions cannot be attributed after the fact
+    function: govern
+    severity: high
+    likelihood: occasional
+    owner: security-team
+    description: >-
+      An incident review cannot establish who changed a setting, who deleted a
+      document, or what the system told a user. Without message persistence
+      and an audit trail there is nothing to reconstruct.
+    metric: rag_audit_events_total
+    controls:
+      - id: C-GOV-06
+        description: >-
+          Append-only audit log covering settings, uploads, deletions,
+          reclassification, refusals, denials and kill-switch changes.
+        implemented_in:
+          - src/governance/audit.py
+          - src/infrastructure/database/postgres/models.py
+      - id: C-GOV-07
+        description: >-
+          Both turns of every exchange are persisted with the trace id, the
+          citations, and the exact grounding text.
+        implemented_in:
+          - src/infrastructure/database/postgres/conversation_repository.py
+          - src/api/routes/chat.py
+      - id: C-GOV-08
+        description: >-
+          One trace id binds logs, spans, the stored message and the audit
+          entry, and is returned to the caller in a response header.
+        implemented_in:
+          - src/api/middleware/trace_context.py
+          - src/monitoring/tracing.py
+    residual_risk: >-
+      Low. Audit writes are non-blocking, so a Postgres outage loses entries;
+      the write_failed counter and its alert are what make that detectable.
+
+  - id: R-G03
+    title: Privileged operations available to any caller
+    function: govern
+    severity: critical
+    likelihood: probable
+    owner: security-team
+    description: >-
+      Deletion, reclassification, settings changes and kill switches are
+      reachable without a role check. The users table has carried a `role`
+      column since Phase 1 that nothing ever read.
+    metric: rag_access_denied_total
+    controls:
+      - id: C-GOV-09
+        description: >-
+          Role allow-lists on every mutating route, evaluated against the role
+          stored in the database rather than any client-supplied header.
+        implemented_in:
+          - src/governance/rbac.py
+          - src/api/routes/governance.py
+          - src/api/routes/admin.py
+      - id: C-GOV-10
+        description: >-
+          Clearance is derived from role by policy, so changing what a role may
+          read is a config change rather than a data migration.
+        implemented_in:
+          - src/governance/policy.py
+          - src/governance/rbac.py
+      - id: C-GOV-11
+        description: >-
+          Firebase ID tokens are cryptographically verified (RS256 signature
+          against Google's rotating keys, plus expiry, issuer and audience)
+          before any identity is trusted. New users are provisioned at the
+          least-privileged role; an existing role is never overwritten by a
+          login, so a promotion cannot be silently undone.
+        implemented_in:
+          - src/auth/firebase.py
+          - src/auth/provisioning.py
+          - src/governance/rbac.py
+      - id: C-GOV-12
+        description: >-
+          Sign-in can be restricted to allow-listed email domains, and an
+          unverified email address is rejected -- without which "sign in with
+          Google" means anyone with a Google account.
+        implemented_in:
+          - src/auth/firebase.py
+    residual_risk: >-
+      Low when FIREBASE_ENABLED=true. With it false the system falls back to
+      the unverified `X-User-Id` development header, which proves nothing;
+      `Principal.auth_provider` records which mode produced each identity so
+      audit entries are not mistaken for verified attribution. Firebase must
+      be enabled before any untrusted exposure.
+
+  - id: R-G04
+    title: Third-party credentials committed to the repository
+    function: govern
+    severity: critical
+    likelihood: occasional
+    owner: security-team
+    description: >-
+      A Firebase service-account JSON, API key or private key is committed.
+      The service account in particular signs tokens for every user, so
+      leaking it is a full compromise of authentication rather than of one
+      account.
+    metric: rag_auth_verifications_total
+    controls:
+      - id: C-GOV-13
+        description: >-
+          Credentials live in a git-ignored `config/` directory; the whole
+          directory is excluded rather than one known filename, so a
+          differently-named credential dropped beside it is covered too.
+          Wildcards additionally catch *service-account*.json, *.pem and *.key
+          anywhere in the tree.
+        implemented_in:
+          - .gitignore
+          - config/README.md
+      - id: C-GOV-14
+        description: >-
+          Credentials may alternatively be supplied as environment variables,
+          so platforms without secret files never need a file on disk.
+        implemented_in:
+          - src/auth/firebase.py
+          - src/config.py
+    residual_risk: >-
+      Low. `.gitignore` prevents accidental staging but cannot un-commit
+      history; config/README.md documents the rotation procedure for when it
+      happens anyway.
+
+  - id: R-S03
+    title: Personal data leaves the deployment in a prompt
+    function: map
+    severity: critical
+    likelihood: probable
+    owner: security-team
+    description: >-
+      Retrieved passages contain names, emails, phone numbers, card numbers or
+      credentials, and are sent verbatim to a third-party LLM provider. This
+      is the most likely privacy incident in a document RAG system, because
+      the corpus is real business documents and nobody reviews each passage
+      before it is retrieved.
+    metric: rag_pii_redactions_total
+    controls:
+      - id: C-MAP-06
+        description: >-
+          Validated detectors (Luhn for cards, structural checks for SSNs,
+          length bounds for phone numbers) mask personal data in retrieved
+          passages BEFORE they enter the prompt -- once a passage is in the
+          prompt it has already left the deployment.
+        implemented_in:
+          - src/governance/pii.py
+          - src/retrieval/pipeline.py
+      - id: C-MAP-07
+        description: >-
+          A second pass redacts generated answers, catching data the model
+          reconstructed or carried in from conversation history, which
+          context redaction cannot reach.
+        implemented_in:
+          - src/governance/pii.py
+      - id: C-MAP-08
+        description: >-
+          Detection counts are recorded per detector and surface; the values
+          themselves are never logged, since logging the PII just redacted
+          would move the leak rather than close it.
+        implemented_in:
+          - src/governance/pii.py
+          - src/monitoring/prometheus_metrics.py
+    residual_risk: >-
+      Moderate. Regex-based detection cannot find unstructured PII -- a name
+      in prose, a home address, a medical detail. Detectors validate rather
+      than matching on shape alone to keep over-redaction (which degrades
+      answers) low, and that trade means some false negatives. A local
+      provider (`ollama`) is the control for corpora where no passage may
+      leave the perimeter at all.
+
+  - id: R-S04
+    title: Document enumeration through listing metadata
+    function: map
+    severity: medium
+    likelihood: occasional
+    owner: security-team
+    description: >-
+      A caller learns how many documents exist that they are not cleared to
+      read, or infers their existence from short pages. Filtering a page after
+      the database returned it discloses an accurate total and a page length
+      that reveals how many rows were withheld.
+    metric: rag_access_denied_total
+    controls:
+      - id: C-MAP-09
+        description: >-
+          The clearance allow-list is applied inside the SQL query, before
+          both the COUNT and the LIMIT/OFFSET, so totals reflect only readable
+          documents and pages are never short.
+        implemented_in:
+          - src/infrastructure/database/postgres/document_repository.py
+          - src/api/routes/documents.py
+      - id: C-MAP-10
+        description: >-
+          Document endpoints return 404 rather than 403 on a clearance
+          failure; a 403 confirms the document exists, which is itself
+          information the caller is not cleared for.
+        implemented_in:
+          - src/api/routes/documents.py
+    residual_risk: Low.
+
+  - id: R-T06
+    title: Router sends a document question somewhere without the documents
+    function: measure
+    severity: high
+    likelihood: occasional
+    owner: platform-team
+    description: >-
+      The query router classifies an internal question as general knowledge or
+      web search, so the model answers confidently from training data or a
+      public source instead of the corpus. Worse than a retrieval miss: the
+      user gets a fluent answer with no indication it was not grounded.
+    metric: rag_router_decisions_total
+    controls:
+      - id: C-MEA-09
+        description: >-
+          Ambiguity resolves to RAG. Below `router_min_confidence` the router
+          chooses full retrieval, because answering from the wrong source is a
+          correctness failure while a needless retrieval is only a cost.
+        implemented_in:
+          - src/routing/classifier.py
+          - src/routing/router.py
+      - id: C-MEA-10
+        description: >-
+          A document signal in the query suppresses the recency heuristic, so
+          "our latest policy" is never sent to web search.
+        implemented_in:
+          - src/routing/rules.py
+      - id: C-MEA-11
+        description: >-
+          Non-RAG answers are marked `grounded: false` in the response, so a
+          client never presents model knowledge with the authority of a cited
+          passage.
+        implemented_in:
+          - src/retrieval/pipeline.py
+      - id: C-MEA-12
+        description: >-
+          Every decision records its route and how it was reached (rule, llm,
+          fallback, forced), so a drift in routing mix is visible before it
+          shows up as a quality complaint.
+        implemented_in:
+          - src/routing/router.py
+          - src/monitoring/prometheus_metrics.py
+    residual_risk: >-
+      Moderate. Classification is probabilistic. `enable_query_router=false`
+      restores the previous always-RAG behaviour instantly if the mix goes
+      wrong, without a rollback.
+
+  - id: R-S05
+    title: Prompt injection reaching a tool
+    function: govern
+    severity: critical
+    likelihood: occasional
+    owner: security-team
+    description: >-
+      Text in a retrieved document instructs the model to run a query, search
+      the web, or evaluate an expression. Tools turn model output into
+      actions, which is the largest blast-radius increase available to an
+      injected instruction.
+    metric: rag_tool_invocations_total
+    controls:
+      - id: C-GOV-15
+        description: >-
+          The calculator parses an AST with an explicit node allow-list rather
+          than calling eval(). `__import__("os").system(...)` is a valid Python
+          expression, so eval() on model-influenced text is remote code
+          execution; an allow-list makes it unrepresentable.
+        implemented_in:
+          - src/tools/builtin/calculator.py
+      - id: C-GOV-16
+        description: >-
+          The SQL tool enforces four independent controls: an analyst-or-above
+          role gate, SELECT-only single-statement validation, an explicit
+          table allow-list (empty by default, so the tool is unusable until
+          someone configures it), and a READ ONLY transaction which is the
+          actual guarantee.
+        implemented_in:
+          - src/tools/builtin/sql_query.py
+      - id: C-GOV-17
+        description: >-
+          Tools that widen the blast radius ship disabled, and the feature
+          flag is enforced inside the registry so a disabled tool cannot be
+          constructed by a path that forgot to check.
+        implemented_in:
+          - src/governance/feature_flags.py
+          - src/plugins/registry.py
+      - id: C-GOV-18
+        description: >-
+          Resource bounds on the calculator (expression length, exponent
+          ceiling, factorial ceiling) stop a one-line expression becoming a
+          denial of service.
+        implemented_in:
+          - src/tools/builtin/calculator.py
+    residual_risk: >-
+      Moderate. The controls bound what a tool can do; they do not stop the
+      model being persuaded to call one. Web search still forwards query text
+      to a third party when enabled, which is why it is off by default.
+
+  # ----------------------------------------------------------------- MANAGE
+
+  - id: R-O01
+    title: No way to stop a misbehaving system without a redeploy
+    function: manage
+    severity: high
+    likelihood: occasional
+    owner: platform-team
+    description: >-
+      A prompt-injection wave, a bad model release or a data-exposure incident
+      requires answering to stop within minutes. A redeploy is not an incident
+      response.
+    metric: rag_kill_switch_state
+    controls:
+      - id: C-MAN-01
+        description: >-
+          Database-backed kill switches for answering, retrieval, ingestion,
+          caching and online evaluation, read on every request with a
+          10-second cache and mirrored into Prometheus.
+        implemented_in:
+          - src/governance/runtime_flags.py
+          - src/api/routes/governance.py
+      - id: C-MAN-02
+        description: >-
+          A disabled subsystem returns a well-formed refusal rather than an
+          error, so clients degrade instead of breaking.
+        implemented_in:
+          - src/retrieval/pipeline.py
+    residual_risk: Low. Flag reads fall back to the last known state on a database outage.
+
+  - id: R-O02
+    title: Latency degradation goes unattributed
+    function: manage
+    severity: medium
+    likelihood: probable
+    owner: platform-team
+    description: >-
+      End-to-end latency rises and no one can say which stage caused it,
+      because per-stage timing exists only inside individual traces.
+    metric: rag_query_latency_seconds
+    threshold: 10.0
+    threshold_direction: max
+    controls:
+      - id: C-MAN-04
+        description: >-
+          TracedStage records a Prometheus histogram per stage in addition to
+          its spans, giving the aggregate view a trace cannot.
+        implemented_in:
+          - src/monitoring/stage_tracer.py
+      - id: C-MAN-05
+        description: >-
+          OTel tracing is configured at startup and exported to a collector
+          that actually exists in the compose stack.
+        implemented_in:
+          - src/api/main.py
+          - docker/otel/collector.yaml
+    residual_risk: Low.
+
+  - id: R-O04
+    title: LLM provider outage takes the product down
+    function: manage
+    severity: high
+    likelihood: occasional
+    owner: platform-team
+    description: >-
+      A single vendor's API becomes unavailable or rate-limits, and every
+      query fails because there is one hardcoded provider and no way to switch
+      without a deploy.
+    metric: rag_llm_gateway_fallbacks_total
+    controls:
+      - id: C-MAN-07
+        description: >-
+          Every LLM call goes through one gateway with an ordered fallback
+          chain, so a provider error falls through to the next vendor instead
+          of failing the request.
+        implemented_in:
+          - src/llm/gateway.py
+          - src/llm/registry.py
+      - id: C-MAN-08
+        description: >-
+          Switching provider is a config change (`LLM_FALLBACK_PROVIDERS`),
+          not a code change, because no call site holds a provider directly.
+        implemented_in:/
+          - src/llm/registry.py
+          - src/config.py
+      - id: C-MAN-09
+        description: >-
+          Fallback can be disabled so a provider outage surfaces loudly
+          instead of hiding behind an unexplained quality change.
+        implemented_in:
+          - src/governance/feature_flags.py
+    residual_risk: >-
+      Low. Mid-stream failures still propagate rather than failing over,
+      deliberately: switching provider after tokens have shipped would splice
+      two different answers together.
+
+  - id: R-O05
+    title: LLM spend grows without anyone noticing
+    function: manage
+    severity: medium
+    likelihood: probable
+    owner: platform-team
+    description: >-
+      Token spend rises through traffic growth, a model change or a routing
+      regression, and is only discovered on an invoice. Cost is the first
+      thing a governance review asks for and the hardest to reconstruct after
+      the fact.
+    metric: rag_llm_cost_usd_total
+    controls:
+      - id: C-MAN-10
+        description: >-
+          Spend is priced at the gateway, the only place that sees both the
+          model and the token counts. An unpriced model records nothing rather
+          than zero, so unreviewed models cannot silently understate spend.
+        implemented_in:
+          - src/llm/gateway.py
+          - src/llm/pricing.py
+      - id: C-MAN-11
+        description: >-
+          The query router answers greetings, arithmetic and date questions
+          with zero model calls, and every avoided retrieval is counted -- the
+          metric that shows routing paying for itself.
+        implemented_in:
+          - src/routing/router.py
+    residual_risk: >-
+      Low. Prices are a hard-coded estimate for budgeting and alerting, not an
+      invoice, and drift as vendors change them.
+
+
+  - id: R-O06
+    title: Cost or brute-force abuse through unlimited requests
+    function: manage
+    severity: high
+    likelihood: probable
+    owner: platform-team
+    description: >-
+      One authenticated user loops the chat endpoint and burns the LLM budget,
+      or hammers sign-in to brute-force an account. The rate-limit settings
+      existed from the beginning and nothing read them, so there was no limit
+      of any kind once a caller was authenticated.
+    metric: rag_rate_limit_decisions_total
+    controls:
+      - id: C-MAN-12
+        description: >-
+          Fixed-window per-identity limits on the expensive routes (chat,
+          upload), keyed on the authenticated principal rather than the client
+          IP -- users behind one NAT would otherwise throttle each other while
+          one user with several addresses evades the limit.
+        implemented_in:
+          - src/governance/rate_limit.py
+          - src/api/dependencies_rate_limit.py
+      - id: C-MAN-13
+        description: >-
+          The limiter fails open when Redis is unavailable and counts the
+          failure, so a cache blip degrades protection instead of taking the
+          product down -- and the error outcome is alertable rather than silent.
+        implemented_in:
+          - src/governance/rate_limit.py
+      - id: C-MAN-14
+        description: >-
+          Rate-limit headers are returned on every response, not only on
+          rejections, so a client can slow down before it is refused.
+        implemented_in:
+          - src/api/dependencies_rate_limit.py
+    residual_risk: >-
+      Moderate. Fixed windows allow a 2x burst at the boundary, and
+      unauthenticated endpoints are not limited -- a reverse proxy should still
+      carry a coarse per-IP limit in front of this.
+
+  - id: R-S06
+    title: Personal data reaches the provider inside the user's own question
+    function: map
+    severity: high
+    likelihood: occasional
+    owner: security-team
+    description: >-
+      Retrieved passages and generated answers were scrubbed, but the question
+      itself was not -- so a user pasting a card number or API key sent it
+      straight to the LLM provider and into the messages table in clear text.
+    metric: rag_pii_redactions_total
+    controls:
+      - id: C-MAP-11
+        description: >-
+          The question is scrubbed at the pipeline entry point, before it is
+          embedded. Redacting only before the prompt would close one egress
+          path and leave the other open, since embedding sends the query to
+          the same provider.
+        implemented_in:
+          - src/governance/pii.py
+          - src/retrieval/pipeline.py
+      - id: C-MAP-12
+        description: >-
+          A deliberately narrower detector set for questions (api_key,
+          credit_card, ssn, iban). The question is also the search key, so
+          masking an email a user is legitimately searching for would silently
+          break their query; the chosen values have no search utility and high
+          harm if leaked.
+        implemented_in:
+          - src/governance/pii.py
+          - src/config.py
+      - id: C-MAP-13
+        description: >-
+          The redacted form is what gets persisted and online-scored, so the
+          raw value never reaches the messages table either.
+        implemented_in:
+          - src/api/routes/chat.py
+    residual_risk: >-
+      Moderate. Contact details in questions are deliberately preserved for
+      search utility, so an email typed into chat still reaches the provider.
+      Widen `GOVERNANCE_PII_QUESTION_DETECTORS` where that trade is wrong.
+
+  - id: R-O03
+    title: Quality complaints never reach the evaluation set
+    function: manage
+    severity: medium
+    likelihood: probable
+    owner: platform-team
+    description: >-
+      Users report bad answers, the reports are counted on a dashboard, and the
+      same failure recurs because nothing added it to the regression suite.
+    metric: rag_user_feedback_total
+    controls:
+      - id: C-MAN-06
+        description: >-
+          Negative feedback is promoted into a golden dataset the CI gate
+          measures against, idempotently.
+        implemented_in:
+          - src/evaluation/online/feedback.py
+          - src/api/routes/feedback.py
+    residual_risk: >-
+      Moderate. Promoted questions have no ground truth, so they are scored for
+      faithfulness and relevancy but not correctness until a human fills it in.

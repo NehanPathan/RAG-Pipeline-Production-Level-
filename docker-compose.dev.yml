@@ -1,0 +1,57 @@
+# Development overrides, layered on docker-compose.yml by `make dev`.
+#
+# The Makefile has referenced this file since the project began but it was
+# never created, so `make dev` failed with a missing-file error. Everything
+# here is a development-only convenience; production runs the base compose
+# file alone.
+
+services:
+  api:
+    environment:
+      - APP_ENV=development
+      - LOG_LEVEL=DEBUG
+      # Development identity when Firebase is off. Ignored entirely once
+      # FIREBASE_ENABLED=true, since a verified token then supplies the
+      # identity and this header is not consulted.
+      - APP_DEBUG=true
+    # --reload restarts uvicorn when src/ changes, which the bind mount below
+    # makes visible inside the container. Note this reloads the ML models too,
+    # so an edit costs a few seconds of startup.
+    command:
+      - uvicorn
+      - src.api.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --reload
+      - --reload-dir
+      - /app/src
+    volumes:
+      - ./src:/app/src
+      - ./data:/app/data
+      - ./config:/app/config:ro
+      # Migrations and scripts, so `docker compose exec api alembic ...` and
+      # the governance scripts work against live code rather than a stale
+      # image layer.
+      - ./scripts:/app/scripts
+      - ./alembic.ini:/app/alembic.ini:ro
+      - ./docs:/app/docs:ro
+
+  streamlit:
+    environment:
+      - API_BASE_URL=http://api:8000
+    # Streamlit watches the filesystem itself, so the mount is all that is
+    # needed for live edits to the UI pages.
+    volumes:
+      - ./src/ui:/app/src/ui
+
+  postgres:
+    # Exposed on the host so a local psql / DBeaver session can inspect the
+    # audit log and evaluation tables directly. Not exposed in production.
+    ports:
+      - "5432:5432"
+
+  qdrant:
+    ports:
+      - "6333:6333"

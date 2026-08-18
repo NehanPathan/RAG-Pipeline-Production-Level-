@@ -1,9 +1,14 @@
 import os
 
-import httpx
+from src.ui import http as httpx
+from src.ui.auth import require_auth
 import streamlit as st
 
 st.set_page_config(page_title="Admin Panel", layout="wide")
+
+# Gate before rendering anything: Streamlit's multipage nav lists every
+# page regardless of sign-in state, so each page must check for itself.
+require_auth()
 st.title("Admin Panel")
 
 API_BASE = os.getenv("API_BASE_URL", "http://localhost:8000")

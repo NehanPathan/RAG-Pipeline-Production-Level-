@@ -14,6 +14,10 @@ class BM25SearchFilter:
     tags: list[str] | None = None
     file_type: str | None = None
     document_ids: list[uuid.UUID] | None = None
+    # Governance MAP -- see VectorSearchFilter.sensitivity_in. Both backends
+    # must apply the same allow-list or hybrid retrieval would leak through
+    # whichever one skipped it.
+    sensitivity_in: list[str] | None = None
 
 
 @dataclass

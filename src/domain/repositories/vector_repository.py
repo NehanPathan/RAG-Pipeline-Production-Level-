@@ -14,6 +14,11 @@ class VectorSearchFilter:
     tags: list[str] | None = None
     file_type: str | None = None
     document_ids: list[uuid.UUID] | None = None
+    # Governance MAP: the classification allow-list the caller's clearance
+    # permits, as raw strings. Applied as a pre-filter inside the vector
+    # store so over-classified chunks never enter the candidate set and
+    # cannot consume top_k slots from chunks the caller may actually read.
+    sensitivity_in: list[str] | None = None
 
 
 @dataclass

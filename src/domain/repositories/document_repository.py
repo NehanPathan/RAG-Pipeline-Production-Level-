@@ -24,7 +24,22 @@ class DocumentRepository(ABC):
         status: DocumentStatus | None = None,
         domain: str | None = None,
         file_type: str | None = None,
+        sensitivity_in: list[str] | None = None,
+        search: str | None = None,
     ) -> tuple[list[Document], int]:
+        """Page through a user's documents.
+
+        `sensitivity_in` is the caller's clearance allow-list and is applied
+        **inside the query**, before both the count and the LIMIT/OFFSET.
+        Filtering the page after it comes back would still disclose an
+        accurate total of documents the caller may not read, and would return
+        short pages whose length leaks how many were withheld.
+
+        `search` matches the file name case-insensitively and, like the
+        clearance filter, is applied inside the query -- filtering a page
+        after fetching it would return pages shorter than `size` and make
+        `total` meaningless.
+        """
         ...
 
     @abstractmethod

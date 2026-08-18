@@ -40,6 +40,12 @@ class AnswerPipeline:
         self._stream_generator = stream_generator
         self._citation_validator = citation_validator
 
+    @property
+    def model_id(self) -> str:
+        """The generating model, surfaced for the `provider` metric label and
+        for the audit record of which model produced a given answer."""
+        return self._stream_generator.model_id
+
     async def generate(
         self,
         query: str,
@@ -80,6 +86,7 @@ class AnswerPipeline:
             "source_name": citation.source_name,
             "document_name": citation.document_name,
             "chunk_id": str(citation.chunk_id),
+            "document_id": str(citation.document_id) if citation.document_id else None,
             "page_number": citation.page_number,
             "section": citation.section,
         }

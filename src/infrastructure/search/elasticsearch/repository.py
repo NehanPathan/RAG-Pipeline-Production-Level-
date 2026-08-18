@@ -11,6 +11,7 @@ from src.domain.repositories.search_repository import (
     BM25SearchFilter,
     SearchRepository,
 )
+from src.domain.value_objects.sensitivity import Sensitivity
 from src.monitoring.logger import get_logger
 
 logger = get_logger(__name__)
@@ -32,6 +33,7 @@ INDEX_MAPPINGS = {
             "token_count": {"type": "integer"},
             "chunk_type": {"type": "keyword"},
             "parent_chunk_id": {"type": "keyword"},
+            "sensitivity": {"type": "keyword"},
         }
     },
     "settings": {
@@ -83,6 +85,7 @@ class ElasticsearchSearchRepository(SearchRepository):
                     "tags": chunk.tags,
                     "file_type": chunk.file_type,
                     "document_name": chunk.document_name,
+                    "sensitivity": chunk.sensitivity.value,
                 })
             response = await self._client.bulk(operations=operations, refresh=True)
             if response.get("errors"):
@@ -138,6 +141,7 @@ class ElasticsearchSearchRepository(SearchRepository):
                 tags=src.get("tags") or [],
                 file_type=src.get("file_type"),
                 document_name=src.get("document_name"),
+                sensitivity=Sensitivity.parse(src.get("sensitivity"), Sensitivity.INTERNAL),
             )
             result.append(BM25ScoredChunk(chunk=chunk, bm25_score=hit["_score"], rank=rank + 1))
 
@@ -172,6 +176,26 @@ class ElasticsearchSearchRepository(SearchRepository):
             clauses.append({"term": {"file_type": filters.file_type}})
         if filters.document_ids:
             clauses.append({"terms": {"document_id": [str(d) for d in filters.document_ids]}})
+        if filters.sensitivity_in is not None:
+            # Mirrors the Qdrant filter: documents indexed before the field
+            # existed have no `sensitivity` and must not vanish from results
+            # for callers whose clearance covers the INTERNAL default they
+            # will be re-checked against by SensitivityGuard.
+            terms_clause: dict = {"terms": {"sensitivity": list(filters.sensitivity_in)}}
+            if Sensitivity.INTERNAL.value in filters.sensitivity_in:
+                clauses.append(
+                    {
+                        "bool": {
+                            "should": [
+                                terms_clause,
+                                {"bool": {"must_not": {"exists": {"field": "sensitivity"}}}},
+                            ],
+                            "minimum_should_match": 1,
+                        }
+                    }
+                )
+            else:
+                clauses.append(terms_clause)
         return clauses
 
 

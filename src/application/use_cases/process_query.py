@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import AsyncIterator
 
+from src.governance.rbac import Principal
 from src.retrieval.pipeline import QueryPipeline
 
 
@@ -14,6 +15,18 @@ class ProcessQueryUseCase:
     def __init__(self, pipeline: QueryPipeline) -> None:
         self._pipeline = pipeline
 
-    async def execute(self, query: str, user_id: uuid.UUID | None = None) -> AsyncIterator[dict]:
-        async for event in self._pipeline.answer(query, user_id=user_id):
+    async def execute(
+        self,
+        query: str,
+        user_id: uuid.UUID | None = None,
+        principal: Principal | None = None,
+    ) -> AsyncIterator[dict]:
+        # `user_id` is kept for the tenant filter; `principal` carries the
+        # clearance that bounds which classifications may be retrieved. When
+        # a principal is supplied its user id is authoritative, since it was
+        # resolved server-side rather than taken from the request body.
+        effective_user_id = principal.user_id if principal else user_id
+        async for event in self._pipeline.answer(
+            query, user_id=effective_user_id, principal=principal
+        ):
             yield event

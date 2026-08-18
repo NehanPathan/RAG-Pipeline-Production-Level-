@@ -1,10 +1,15 @@
 import json
 import os
 
-import httpx
+from src.ui import http as httpx
+from src.ui.auth import require_auth
 import streamlit as st
 
 st.set_page_config(page_title="Retrieval Inspector", layout="wide")
+
+# Gate before rendering anything: Streamlit's multipage nav lists every
+# page regardless of sign-in state, so each page must check for itself.
+require_auth()
 st.title("Retrieval Inspector")
 st.caption("Debug and inspect the full retrieval pipeline for any query.")
 
@@ -43,6 +48,33 @@ if st.button("Inspect", type="primary", disabled=not query):
 
                 if pq.get("expanded"):
                     st.write("**Expanded queries:**", pq["expanded"])
+
+                # The API returns both of these and the page ignored them, so
+                # "nothing found" still could not be told apart from "your
+                # clearance withheld it" -- the exact confusion the field was
+                # added to remove.
+                gov = data.get("governance", {})
+                blocked = gov.get("blocked_by_clearance", 0)
+                counts = (
+                    len(data.get("vector_results", [])),
+                    len(data.get("bm25_results", [])),
+                )
+                if blocked:
+                    st.warning(
+                        f"**{blocked} passage(s) withheld by your clearance.** "
+                        "They matched the query but sit above the classification "
+                        "you are permitted to read.",
+                        icon="🔒",
+                    )
+                elif counts == (0, 0):
+                    st.info(
+                        "Nothing matched — and nothing was withheld by clearance, "
+                        "so this is a genuine retrieval miss rather than a "
+                        "permissions issue.",
+                        icon="🔍",
+                    )
+                if gov.get("trace_id"):
+                    st.caption(f"trace: `{gov['trace_id']}`")
 
                 lat = data.get("latency_breakdown", {})
                 if lat:

@@ -12,6 +12,7 @@ from src.domain.repositories.vector_repository import (
     VectorRepository,
     VectorSearchFilter,
 )
+from src.domain.value_objects.sensitivity import Sensitivity
 from src.monitoring.logger import get_logger
 
 logger = get_logger(__name__)
@@ -53,7 +54,34 @@ class QdrantVectorRepository(VectorRepository):
                 field_name="file_type",
                 field_schema=qdrant_models.PayloadSchemaType.KEYWORD,
             )
+            # Governance MAP: the classification filter runs on every single
+            # query, so it needs an index as much as user_id does.
+            await self._client.create_payload_index(
+                collection_name=self._collection_name,
+                field_name="sensitivity",
+                field_schema=qdrant_models.PayloadSchemaType.KEYWORD,
+            )
             logger.info("qdrant_collection_created", collection=self._collection_name, vector_size=vector_size)
+
+    async def ensure_governance_indexes(self) -> None:
+        """Add payload indexes introduced after a collection already existed.
+
+        `create_collection_if_not_exists` only indexes fields at creation
+        time, so a deployment that already had `document_chunks` would filter
+        on `sensitivity` without an index — correct, but a full scan per
+        query. Called from startup; safe to run repeatedly.
+        """
+        try:
+            await self._client.create_payload_index(
+                collection_name=self._collection_name,
+                field_name="sensitivity",
+                field_schema=qdrant_models.PayloadSchemaType.KEYWORD,
+            )
+        except Exception as exc:
+            # Already-indexed and missing-collection both land here and are
+            # both fine: the first is the steady state, the second means no
+            # documents exist yet and creation will index it.
+            logger.info("qdrant_governance_index_skipped", error=str(exc))
 
     async def upsert_batch(self, chunks: list[DocumentChunk], batch_size: int = 100) -> None:
         if not chunks:
@@ -78,6 +106,7 @@ class QdrantVectorRepository(VectorRepository):
                     "tags": chunk.tags,
                     "file_type": chunk.file_type,
                     "document_name": chunk.document_name,
+                    "sensitivity": chunk.sensitivity.value,
                 },
             )
             for chunk in chunks
@@ -129,6 +158,12 @@ class QdrantVectorRepository(VectorRepository):
                 tags=payload.get("tags") or [],
                 file_type=payload.get("file_type"),
                 document_name=payload.get("document_name"),
+                # Points written before this field existed have no
+                # `sensitivity` key; Sensitivity.parse resolves those to
+                # INTERNAL rather than PUBLIC so legacy data fails closed.
+                sensitivity=Sensitivity.parse(
+                    payload.get("sensitivity"), Sensitivity.INTERNAL
+                ),
             )
             scored_chunks.append(ScoredChunk(chunk=chunk, score=result.score, rank=rank + 1))
 
@@ -203,6 +238,30 @@ class QdrantVectorRepository(VectorRepository):
                     match=qdrant_models.MatchAny(any=[str(d) for d in filters.document_ids]),
                 )
             )
+        if filters.sensitivity_in is not None:
+            # `should_be_null` alongside the allow-list: points indexed before
+            # the field existed have no `sensitivity` key at all, and a bare
+            # MatchAny would exclude them silently. They are admitted here only
+            # when the caller's clearance covers the INTERNAL default that
+            # SensitivityGuard will re-check them against post-retrieval.
+            allow_null = Sensitivity.INTERNAL.value in filters.sensitivity_in
+            match_condition = qdrant_models.FieldCondition(
+                key="sensitivity",
+                match=qdrant_models.MatchAny(any=list(filters.sensitivity_in)),
+            )
+            if allow_null:
+                conditions.append(
+                    qdrant_models.Filter(
+                        should=[
+                            match_condition,
+                            qdrant_models.IsNullCondition(
+                                is_null=qdrant_models.PayloadField(key="sensitivity")
+                            ),
+                        ]
+                    )
+                )
+            else:
+                conditions.append(match_condition)
         return qdrant_models.Filter(must=conditions) if conditions else None
 
 

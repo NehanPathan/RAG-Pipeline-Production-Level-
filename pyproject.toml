@@ -74,6 +74,15 @@ dependencies = [
     # Validation / Config
     "pydantic>=2.10.0",
     "pydantic-settings>=2.6.0",
+    # Declared explicitly rather than relying on the transitive copy pulled in
+    # by docling/unstructured: src/governance/risk_register.py imports it
+    # directly, and a direct import on a transitive dependency breaks the day
+    # an unrelated package drops it.
+    "pyyaml>=6.0.2",
+    # Firebase ID token verification (src/auth/). Handles RS256 signature
+    # checking against Google's rotating public keys -- the part hand-rolled
+    # JWT verification reliably gets wrong.
+    "firebase-admin>=6.6.0",
     "python-jose[cryptography]>=3.3.0",
     "passlib[bcrypt]>=1.7.4",
 
@@ -125,7 +134,14 @@ src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP", "B", "SIM", "RUF"]
-ignore = ["E501"]
+ignore = [
+    "E501",
+    # `Depends(...)` in a parameter default is the FastAPI dependency-injection
+    # idiom, not the mutable-default bug B008 exists to catch. Every governed
+    # route uses it (see src/governance/rbac.py), so this must be an allowance
+    # rather than a per-line noqa on every endpoint.
+    "B008",
+]
 
 [tool.mypy]
 python_version = "3.12"

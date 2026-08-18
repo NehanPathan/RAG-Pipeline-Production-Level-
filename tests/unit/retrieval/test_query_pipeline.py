@@ -13,6 +13,8 @@ from src.domain.value_objects.processed_query import ProcessedQuery
 from src.domain.value_objects.query_intent import IntentType, QueryIntent
 from src.domain.value_objects.retrieval_candidate import FusedChunk, RerankedChunk
 from src.domain.value_objects.retrieval_trace import RetrievalTrace
+from src.domain.value_objects.sensitivity import Sensitivity
+from src.governance.rbac import Principal, Role
 from src.retrieval.pipeline import QueryPipeline
 
 
@@ -27,23 +29,39 @@ def _processed_query(query="rewritten query"):
     )
 
 
-def _scored_chunk():
-    chunk = DocumentChunk(document_id=uuid.uuid4(), content="v", position=0)
-    return ScoredChunk(chunk=chunk, score=0.9, rank=1)
+def _chunk(content: str, sensitivity: Sensitivity = Sensitivity.INTERNAL) -> DocumentChunk:
+    chunk = DocumentChunk(document_id=uuid.uuid4(), content=content, position=0)
+    chunk.sensitivity = sensitivity
+    return chunk
 
 
-def _bm25_chunk():
-    chunk = DocumentChunk(document_id=uuid.uuid4(), content="b", position=0)
-    return BM25ScoredChunk(chunk=chunk, bm25_score=10.0, rank=1)
+def _scored_chunk(sensitivity: Sensitivity = Sensitivity.INTERNAL):
+    return ScoredChunk(chunk=_chunk("v", sensitivity), score=0.9, rank=1)
+
+
+def _bm25_chunk(sensitivity: Sensitivity = Sensitivity.INTERNAL):
+    return BM25ScoredChunk(chunk=_chunk("b", sensitivity), bm25_score=10.0, rank=1)
 
 
 def _fused_chunk():
-    chunk = DocumentChunk(document_id=uuid.uuid4(), content="f", position=0)
-    return FusedChunk(chunk=chunk, rrf_score=0.01)
+    return FusedChunk(chunk=_chunk("f"), rrf_score=0.01)
 
 
 def _reranked_chunk():
     return RerankedChunk(fused=_fused_chunk(), rerank_score=0.9)
+
+
+@pytest.fixture
+def cleared_principal() -> Principal:
+    """An identity cleared for the INTERNAL test fixtures.
+
+    Every pipeline test needs one: `inspect()`/`answer()` fall back to an
+    anonymous principal with `public` clearance, which correctly filters out
+    the internal-by-default chunks these fixtures produce.
+    """
+    return Principal(
+        user_id=uuid.uuid4(), role=Role.ADMIN.value, clearance=Sensitivity.RESTRICTED
+    )
 
 
 @pytest.fixture
@@ -87,10 +105,18 @@ def context_processor():
 @pytest.fixture
 def answer_pipeline():
     ap = AsyncMock()
+    ap.model_id = "gpt-4o"
 
     async def _generate(query, chunks, citations, **kwargs):
         yield {"type": "token", "content": "Hello"}
-        yield {"type": "done", "answer": "Hello", "citations": [], "model_used": "gpt-4o"}
+        # A citation is required for the answer to clear the grounding policy
+        # (C-GOV-04); an uncited answer is refused, which is its own test below.
+        yield {
+            "type": "done",
+            "answer": "Hello [1]",
+            "citations": [{"index": 1, "chunk_id": str(uuid.uuid4())}],
+            "model_used": "gpt-4o",
+        }
 
     ap.generate = _generate
     return ap
@@ -101,6 +127,7 @@ def semantic_cache():
     cache = AsyncMock()
     cache.lookup = AsyncMock(return_value=None)
     cache.store = AsyncMock()
+    cache.invalidate_document = AsyncMock()
     return cache
 
 
@@ -123,8 +150,10 @@ def pipeline(
 
 
 @pytest.mark.asyncio
-async def test_inspect_runs_modules_a_through_d(pipeline, query_agent, hybrid_retriever, fuser, reranker):
-    result = await pipeline.inspect("what is the refund policy?")
+async def test_inspect_runs_modules_a_through_d(
+    pipeline, query_agent, hybrid_retriever, fuser, reranker, cleared_principal
+):
+    result = await pipeline.inspect("what is the refund policy?", principal=cleared_principal)
 
     query_agent.process.assert_called_once()
     hybrid_retriever.retrieve.assert_called_once()
@@ -137,8 +166,8 @@ async def test_inspect_runs_modules_a_through_d(pipeline, query_agent, hybrid_re
 
 
 @pytest.mark.asyncio
-async def test_inspect_populates_trace_timings_and_counts(pipeline):
-    result = await pipeline.inspect("query")
+async def test_inspect_populates_trace_timings_and_counts(pipeline, cleared_principal):
+    result = await pipeline.inspect("query", principal=cleared_principal)
 
     assert result.trace.fused_count == 1
     assert result.trace.reranked_count == 1
@@ -149,21 +178,21 @@ async def test_inspect_populates_trace_timings_and_counts(pipeline):
 
 
 @pytest.mark.asyncio
-async def test_inspect_does_not_invoke_context_processor(pipeline, context_processor):
-    await pipeline.inspect("query")
+async def test_inspect_does_not_invoke_context_processor(pipeline, context_processor, cleared_principal):
+    await pipeline.inspect("query", principal=cleared_principal)
 
     context_processor.process.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_answer_returns_cached_result_on_hit(pipeline, semantic_cache, query_agent):
+async def test_answer_returns_cached_result_on_hit(pipeline, semantic_cache, query_agent, cleared_principal):
     semantic_cache.lookup = AsyncMock(
         return_value=SemanticCacheEntry(
             query_text="q", answer="cached answer", citations=[{"index": 1}]
         )
     )
 
-    events = [event async for event in pipeline.answer("query")]
+    events = [e async for e in pipeline.answer("query", principal=cleared_principal)]
 
     assert len(events) == 1
     assert events[0]["answer"] == "cached answer"
@@ -172,23 +201,201 @@ async def test_answer_returns_cached_result_on_hit(pipeline, semantic_cache, que
 
 
 @pytest.mark.asyncio
-async def test_answer_runs_full_pipeline_on_cache_miss(pipeline, query_agent, context_processor):
-    events = [event async for event in pipeline.answer("query")]
+async def test_answer_runs_full_pipeline_on_cache_miss(
+    pipeline, query_agent, context_processor, cleared_principal
+):
+    events = [e async for e in pipeline.answer("query", principal=cleared_principal)]
 
     query_agent.process.assert_called_once()
     context_processor.process.assert_called_once()
-    token_events = [e for e in events if e["type"] == "token"]
-    done_events = [e for e in events if e["type"] == "done"]
-    assert len(token_events) == 1
-    assert len(done_events) == 1
+    assert len([e for e in events if e["type"] == "token"]) == 1
+    assert len([e for e in events if e["type"] == "done"]) == 1
 
 
 @pytest.mark.asyncio
-async def test_answer_stores_result_in_cache_after_done(pipeline, semantic_cache):
-    _ = [event async for event in pipeline.answer("my query")]
+async def test_answer_stores_result_in_cache_after_done(pipeline, semantic_cache, cleared_principal):
+    _ = [e async for e in pipeline.answer("my query", principal=cleared_principal)]
 
     semantic_cache.store.assert_called_once()
     call = semantic_cache.store.call_args
     assert call.args[0] == "my query"
-    assert call.args[1] == "Hello"
+    assert call.args[1] == "Hello [1]"
     assert call.kwargs["model_used"] == "gpt-4o"
+
+
+@pytest.mark.asyncio
+async def test_done_event_carries_trace_id_and_refusal_flag(pipeline, cleared_principal):
+    events = [e async for e in pipeline.answer("query", principal=cleared_principal)]
+    done = next(e for e in events if e["type"] == "done")
+
+    assert "trace_id" in done
+    assert done["refused"] is False
+
+
+class TestGovernanceControls:
+    """The controls the pipeline applies, each asserted directly."""
+
+    @pytest.mark.asyncio
+    async def test_clearance_filters_internal_content_from_public_caller(self, pipeline):
+        """No principal means an anonymous, public-clearance caller. The
+        INTERNAL fixtures must not reach them."""
+        result = await pipeline.inspect("query")
+
+        assert result.vector_results == []
+        assert result.bm25_results == []
+        assert result.blocked_by_clearance == 2
+
+    @pytest.mark.asyncio
+    async def test_public_content_reaches_a_public_caller(self, hybrid_retriever, pipeline):
+        hybrid_retriever.retrieve = AsyncMock(
+            return_value=(
+                [_scored_chunk(Sensitivity.PUBLIC)],
+                [_bm25_chunk(Sensitivity.PUBLIC)],
+                RetrievalTrace(),
+            )
+        )
+
+        result = await pipeline.inspect("query")
+
+        assert len(result.vector_results) == 1
+        assert result.blocked_by_clearance == 0
+
+    @pytest.mark.asyncio
+    async def test_clearance_allow_list_is_pushed_into_the_search_filters(
+        self, pipeline, hybrid_retriever, cleared_principal
+    ):
+        """The pre-filter is the primary control; the post-filter only backs
+        it up. Assert the allow-list actually reaches the backends."""
+        await pipeline.inspect("query", principal=cleared_principal)
+
+        kwargs = hybrid_retriever.retrieve.call_args.kwargs
+        assert kwargs["vector_filter"].sensitivity_in == [
+            "public",
+            "internal",
+            "confidential",
+            "restricted",
+        ]
+        assert kwargs["bm25_filter"].sensitivity_in == kwargs["vector_filter"].sensitivity_in
+
+    @pytest.mark.asyncio
+    async def test_empty_context_is_refused_before_generation(
+        self, pipeline, context_processor, answer_pipeline, cleared_principal
+    ):
+        context_processor.process = AsyncMock(return_value=([], {}))
+        generated = False
+
+        async def _generate(*args, **kwargs):
+            nonlocal generated
+            generated = True
+            yield {"type": "done", "answer": "made up", "citations": []}
+
+        answer_pipeline.generate = _generate
+
+        events = [e async for e in pipeline.answer("query", principal=cleared_principal)]
+        done = next(e for e in events if e["type"] == "done")
+
+        assert done["refused"] is True
+        assert done["refusal_reason"] == "C-GOV-03"
+        assert generated is False, "refusal must happen before the model is called"
+
+    @pytest.mark.asyncio
+    async def test_uncited_answer_is_refused(self, pipeline, answer_pipeline, cleared_principal):
+        async def _generate(*args, **kwargs):
+            yield {"type": "done", "answer": "confident but ungrounded", "citations": []}
+
+        answer_pipeline.generate = _generate
+
+        events = [e async for e in pipeline.answer("query", principal=cleared_principal)]
+        done = next(e for e in events if e["type"] == "done")
+
+        assert done["refused"] is True
+        assert done["refusal_reason"] == "C-GOV-04"
+        assert "confident but ungrounded" not in done["answer"]
+
+    @pytest.mark.asyncio
+    async def test_refused_answer_is_not_cached(
+        self, pipeline, answer_pipeline, semantic_cache, cleared_principal
+    ):
+        """Caching a refusal would serve it to every similar future query."""
+
+        async def _generate(*args, **kwargs):
+            yield {"type": "done", "answer": "ungrounded", "citations": []}
+
+        answer_pipeline.generate = _generate
+
+        _ = [e async for e in pipeline.answer("query", principal=cleared_principal)]
+
+        semantic_cache.store.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_describe_config_reports_the_live_configuration(self, pipeline):
+        """Recorded against every evaluation run; a hardcoded value here makes
+        cross-run comparison unsound."""
+        config = pipeline.describe_config()
+
+        assert config["vector_top_k"] == 20
+        assert config["bm25_top_k"] == 20
+        assert config["rerank_top_n"] == 10
+        assert config["generator_model"] == "gpt-4o"
+        assert "policy_version" in config
+
+    @pytest.mark.asyncio
+    async def test_invalidate_cached_document_reaches_the_cache(self, pipeline, semantic_cache):
+        document_id = uuid.uuid4()
+
+        await pipeline.invalidate_cached_document(document_id)
+
+        semantic_cache.invalidate_document.assert_called_once_with(document_id)
+
+
+class TestDoneEventStamping:
+    """Every `done` event must carry the redacted question, whichever of the
+    five paths produced it. A refusal that omitted it made the raw question
+    fall through to persistence -- and refusals are common on a sparse corpus."""
+
+    @pytest.mark.asyncio
+    async def test_rag_answer_carries_the_question(self, pipeline, cleared_principal):
+        events = [e async for e in pipeline.answer("what is the policy", principal=cleared_principal)]
+        done = next(e for e in events if e["type"] == "done")
+        assert done["question"] == "what is the policy"
+
+    @pytest.mark.asyncio
+    async def test_refusal_carries_the_question(
+        self, pipeline, context_processor, cleared_principal
+    ):
+        """The path that previously leaked: no context -> refusal -> the raw
+        question was persisted because the event had no `question` key."""
+        context_processor.process = AsyncMock(return_value=([], {}))
+
+        events = [e async for e in pipeline.answer("anything", principal=cleared_principal)]
+        done = next(e for e in events if e["type"] == "done")
+
+        assert done["refused"] is True
+        assert done["question"] == "anything"
+        assert done["grounded"] is False
+
+    @pytest.mark.asyncio
+    async def test_greeting_route_carries_the_question(self, pipeline, cleared_principal):
+        events = [e async for e in pipeline.answer("hi", principal=cleared_principal)]
+        done = next(e for e in events if e["type"] == "done")
+        assert done["question"] == "hi"
+
+    @pytest.mark.asyncio
+    async def test_cache_hit_carries_the_question(
+        self, pipeline, semantic_cache, cleared_principal
+    ):
+        semantic_cache.lookup = AsyncMock(
+            return_value=SemanticCacheEntry(query_text="q", answer="cached", citations=[])
+        )
+        events = [e async for e in pipeline.answer("cached one", principal=cleared_principal)]
+        done = next(e for e in events if e["type"] == "done")
+        assert done["question"] == "cached one"
+
+    @pytest.mark.asyncio
+    async def test_every_done_event_has_the_full_shape(self, pipeline, cleared_principal):
+        """Clients branch on these keys; a missing one is a client-side
+        KeyError rather than a graceful degradation."""
+        events = [e async for e in pipeline.answer("hi", principal=cleared_principal)]
+        done = next(e for e in events if e["type"] == "done")
+        for key in ("question", "route", "route_source", "grounded", "answer", "citations"):
+            assert key in done, f"done event is missing {key!r}"

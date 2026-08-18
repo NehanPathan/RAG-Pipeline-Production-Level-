@@ -83,17 +83,14 @@ class IngestionPipeline:
     async def ingest(self, document: Document, file_path: Path) -> IngestionResult:
         logger.info("ingestion_start", document_id=str(document.id), file=document.file_name)
 
-        # Mark as processing
         document.mark_processing()
         await self._document_repo.update(document)
 
         try:
-            # Step 1: Select loader and load document
             loader = self._select_loader(document.file_type, file_path.suffix)
             raw_document = await loader.load(file_path)
             document.loader_used = loader.name
 
-            # Step 1b-1d: OCR detection -> OCR (only if required) -> layout
             # analysis, unified into one ParsedDocument (Parts 1-3)
             parsed_document = await self._parsing_service.process(
                 raw_document, file_path, document.file_type
@@ -101,13 +98,11 @@ class IngestionPipeline:
             document.page_count = parsed_document.raw.page_count
             document.word_count = parsed_document.raw.word_count
 
-            # Step 2: LLM metadata enrichment (OCR-augmented text when applicable)
             document.metadata = await self._enricher.enrich(
                 content=parsed_document.full_text,
                 file_name=document.file_name,
             )
 
-            # Step 3: Chunking -- HybridChunkingPipeline in production,
             # ParentChildOnlyStrategy for the Part 8 A/B benchmark (Gap 5)
             chunks = await self._chunking_strategy.chunk(document.id, parsed_document)
 
@@ -119,8 +114,12 @@ class IngestionPipeline:
                 chunk.tags = document.metadata.tags
                 chunk.file_type = document.file_type
                 chunk.document_name = document.file_name
+                # Governance MAP: classification is inherited, never inferred
+                # per chunk. A document is classified once, at upload, and
+                # every chunk derived from it carries that label into Qdrant
+                # and Elasticsearch so retrieval can filter on it.
+                chunk.sensitivity = document.sensitivity
 
-            # Step 4: Generate embeddings in batch (retrieval-role provider)
             retrieval_provider = self._embedding_strategy.retrieval_provider
             child_chunks = [c for c in chunks if c.chunk_type.value in ("child", "table", "standalone")]
             texts = [c.content for c in child_chunks]
@@ -129,23 +128,18 @@ class IngestionPipeline:
                 chunk.embedding = embedding
                 chunk.embedding_model = retrieval_provider.model_id
 
-            # Step 5: Ensure collection exists
             await self._vector_repo.create_collection_if_not_exists(
                 retrieval_provider.dimensions
             )
             await self._search_repo.create_index_if_not_exists()
 
-            # Step 6: Store chunks in Postgres
             saved_chunks = await self._chunk_repo.save_batch(chunks)
 
-            # Step 7: Upsert vectors to Qdrant (only chunks with embeddings)
             chunks_with_embeddings = [c for c in saved_chunks if c.has_embedding()]
             await self._vector_repo.upsert_batch(chunks_with_embeddings)
 
-            # Step 8: Index in Elasticsearch for BM25
             await self._search_repo.index_batch(saved_chunks)
 
-            # Step 9: Persist document-level OCR/layout/embedding summary
             # (Part 7's Document Intelligence UI reads this) -- optional so
             # IngestionPipeline has no hard dependency on Module 9 being wired.
             if self._intelligence_recorder is not None:
@@ -157,7 +151,6 @@ class IngestionPipeline:
                     retrieval_model_id=retrieval_provider.model_id,
                 )
 
-            # Mark as indexed
             document.mark_indexed()
             await self._document_repo.update(document)
 

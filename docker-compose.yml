@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   api:
     build:
@@ -12,6 +10,10 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - QDRANT_URL=http://qdrant:6333
       - ELASTICSEARCH_URL=http://elasticsearch:9200
+      # Point the tracer at the collector service rather than localhost --
+      # without a reachable endpoint every span is dropped at export time.
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_SERVICE_NAME=prod-rag-api
     env_file: .env
     depends_on:
       postgres:
@@ -22,9 +24,23 @@ services:
         condition: service_started
       elasticsearch:
         condition: service_healthy
+      otel-collector:
+        condition: service_started
     volumes:
       - ./src:/app/src
       - ./data:/app/data
+      # Secret material, mounted read-only rather than COPY'd into the image.
+      # A credential baked into an image layer lives there permanently and is
+      # extractable by anyone who can pull the image -- and `docker history`
+      # will happily show you the layer. A mount keeps it on the host, and
+      # :ro means a compromised container cannot rewrite it.
+      - ./config:/app/config:ro
+      # Model cache. Without this, every container recreation re-downloads
+      # BGE-M3 (chunking embedder) and the BGE reranker from HuggingFace --
+      # hundreds of MB and several minutes of "unhealthy" on each `compose up`
+      # that happens to recreate the container. A named volume survives
+      # recreation, so the download happens once per machine.
+      - model_cache:/home/raguser/.cache
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
@@ -40,6 +56,10 @@ services:
       - "8501:8501"
     environment:
       - API_BASE_URL=http://api:8000
+    # The UI reads FIREBASE_ENABLED, FIREBASE_WEB_API_KEY and
+    # FIREBASE_ALLOWED_DOMAINS from here to drive the sign-in form. It never
+    # sees the service account -- that stays on the API side, which is the
+    # only component that needs to *verify* tokens rather than obtain them.
     env_file: .env
     depends_on:
       - api
@@ -104,8 +124,66 @@ services:
       retries: 5
     restart: unless-stopped
 
+  # ------------------------------------------------------------------
+  # Observability stack. The API has exported Prometheus metrics and OTLP
+  # spans all along; until these three services existed, nothing was on the
+  # receiving end of either -- which is indistinguishable, from the outside,
+  # from having no instrumentation at all.
+  # ------------------------------------------------------------------
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.115.1
+    command: ["--config=/etc/otel/collector.yaml"]
+    volumes:
+      - ./docker/otel/collector.yaml:/etc/otel/collector.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC -- the endpoint configure_tracing() targets
+      - "4318:4318"   # OTLP HTTP
+      - "8888:8888"   # collector's own metrics
+      - "8889:8889"   # span-derived RED metrics
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.0.1
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=15d
+      - --web.enable-lifecycle
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./docker/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    environment:
+      # Dev-only anonymous admin access. In any shared environment this must
+      # be replaced with real credentials -- the dashboards expose audit and
+      # policy state.
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./docker/grafana/dashboards:/etc/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
 volumes:
   postgres_data:
   qdrant_data:
   elasticsearch_data:
   redis_data:
+  prometheus_data:
+  grafana_data:
+  model_cache:

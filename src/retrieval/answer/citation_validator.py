@@ -5,6 +5,7 @@ import uuid
 
 from src.domain.entities.conversation import Citation
 from src.monitoring.logger import get_logger
+from src.monitoring.prometheus_metrics import citation_validation
 
 logger = get_logger(__name__)
 
@@ -28,6 +29,12 @@ class CitationValidator:
         for index in referenced_indices:
             citation = by_index.get(index)
             if citation is None:
+                # The clearest hallucination signal this system has: the model
+                # referenced a source that was never in its context. Counted
+                # as well as logged so it can be alerted on and trended --
+                # risk R-T01 in docs/governance/risk_register.yaml watches
+                # exactly this metric.
+                citation_validation.labels(result="hallucinated_index").inc()
                 logger.warning("citation_validation_hallucinated_index", index=index)
                 continue
             validated.append(citation)
