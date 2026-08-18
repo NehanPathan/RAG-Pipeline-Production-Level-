@@ -11,6 +11,7 @@ import pytest
 
 from src.ingestion.cad.dwg_converter import DwgConversionUnavailableError, NullDwgConverter
 from src.ingestion.cad.models import (
+    BlockDefinition,
     CadDocument,
     CadTextEntity,
     DimensionRecord,
@@ -47,7 +48,9 @@ def _cad() -> CadDocument:
         title_block=[
             TitleBlockField(tag="drawing_number", value="S-104", block_name="TB", layout_index=1),
             TitleBlockField(tag="revision", value="C", block_name="TB", layout_index=1),
-            TitleBlockField(tag="title", value="ROOF FRAMING PLAN", block_name="TB", layout_index=1),
+            TitleBlockField(
+                tag="title", value="ROOF FRAMING PLAN", block_name="TB", layout_index=1
+            ),
         ],
         dimensions=[
             DimensionRecord(
@@ -72,6 +75,14 @@ def _cad() -> CadDocument:
             PartInstance(
                 block_name="BASEPLATE", layer="S-DET", layout_index=1, insert_point=(10.0, 0.0)
             ),
+        ],
+        block_definitions=[
+            BlockDefinition(
+                name="BASEPLATE",
+                primitive_counts={"LINE": 4},
+                width=10.0,
+                height=10.0,
+            )
         ],
         entity_count=12,
     )
@@ -162,21 +173,37 @@ class TestDimensionSchedule:
         assert "3000" in schedule.markdown
 
 
-class TestPartsTable:
+class TestSymbolSchedule:
     async def test_block_references_are_counted_into_a_schedule(self):
         """Answers "how many base-plate details are on this sheet" without
         anyone having tabulated them."""
         raw = await _loader().load(Path("/tmp/S-104.dxf"))
 
-        bom = next(t for t in raw.tables if "Block schedule" in t.caption)
+        bom = next(t for t in raw.tables if "Symbol schedule" in t.caption)
         assert "BASEPLATE" in bom.markdown
         assert "| 2 |" in bom.markdown
 
     async def test_piece_marks_are_carried_through(self):
         raw = await _loader().load(Path("/tmp/S-104.dxf"))
 
-        bom = next(t for t in raw.tables if "Block schedule" in t.caption)
+        bom = next(t for t in raw.tables if "Symbol schedule" in t.caption)
         assert "BP-1" in bom.markdown
+
+    async def test_the_schedule_records_what_a_symbol_is_made_of(self):
+        """A count with no shape behind it cannot be checked against the
+        drawing."""
+        raw = await _loader().load(Path("/tmp/S-104.dxf"))
+
+        bom = next(t for t in raw.tables if "Symbol schedule" in t.caption)
+        assert "4 LINE" in bom.markdown
+        assert "10 x 10" in bom.markdown
+
+    async def test_a_symbol_summary_block_states_the_per_layer_counts(self):
+        raw = await _loader().load(Path("/tmp/S-104.dxf"))
+
+        summary = next(b for b in raw.text_blocks if b.element_label == "cad_symbols")
+        assert "S-DET: 2 block placement(s) of 1 distinct shape(s)" in summary.text
+        assert "A block placement is not a part count" in summary.text
 
 
 class TestDwgHandling:
