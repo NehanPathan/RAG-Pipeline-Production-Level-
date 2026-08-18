@@ -1,0 +1,73 @@
+name: CD
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - 'v*'
+
+jobs:
+  build-and-push:
+    name: Build & Push Docker Images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta-api
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}/api
+
+      - name: Build and push API image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/api.Dockerfile
+          push: true
+          tags: ${{ steps.meta-api.outputs.tags }}
+          labels: ${{ steps.meta-api.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Extract metadata (frontend)
+        id: meta-ui
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}/frontend
+
+      # The React app is the product UI. It replaces the Streamlit image this
+      # step used to publish -- Streamlit was the interim UI that proved the
+      # API before any React existed, and the pipeline had never caught up:
+      # it was shipping the scaffold and not the product.
+      #
+      # The build args must match docker-compose.yml. `VITE_USE_MOCKS: false`
+      # is the one that matters: Vite inlines it, and a `true` build renders a
+      # convincing product full of drawings that do not exist.
+      - name: Build and push frontend image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/frontend.Dockerfile
+          push: true
+          build-args: |
+            VITE_USE_MOCKS=false
+            VITE_API_BASE=/api/v1
+            VITE_FIREBASE_API_KEY=${{ secrets.FIREBASE_WEB_API_KEY }}
+          tags: ${{ steps.meta-ui.outputs.tags }}
+          labels: ${{ steps.meta-ui.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

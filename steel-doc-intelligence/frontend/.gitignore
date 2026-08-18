@@ -1,0 +1,8 @@
+
+
+# Playwright run artefacts. The snapshot *baselines* under e2e/**-snapshots/
+# are committed on purpose -- they are the expected output -- but traces,
+# diffs and the HTML report are per-run and large.
+test-results/
+playwright-report/
+blob-report/

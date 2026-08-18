@@ -1,0 +1,335 @@
+# The steel document-intelligence stack.
+#
+# Runs alongside the original RAG stack rather than in place of it. Both
+# declare the same services, so every published host port here sits in a
+# 1xxxx band (15432, 16333, 19200 ...) and the database is `steeldb` owned by
+# `steeluser`. Sharing `ragdb`/`raguser` on 5432 meant one DATABASE_URL
+# addressed whichever stack happened to be running -- and a migration aimed
+# at this project landed in the other one's database.
+#
+# Container-internal ports are unchanged, so service-to-service URLs read
+# `postgres:5432` as usual. Only the host side is remapped.
+#
+#   Frontend   http://localhost:15173        Streamlit  http://localhost:18501
+#   API        http://localhost:18000
+#   Postgres   localhost:15432               Redis      localhost:16379
+#   Qdrant     http://localhost:16333        ES         http://localhost:19200
+#   MinIO      http://localhost:19000        console    http://localhost:19001
+#   Grafana    http://localhost:13000        Prometheus http://localhost:19090
+#
+# Two UIs, on purpose and temporarily. Streamlit was built first to de-risk
+# the new APIs before a React app was written against them (see 14.3); the
+# React frontend is what ships. Streamlit stays until the remaining routes it
+# exercises have equivalents, then it goes.
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    ports:
+      - "18000:8000"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://steeluser:steelpass@postgres:5432/steeldb
+      - REDIS_URL=redis://redis:6379/0
+      - QDRANT_URL=http://qdrant:6333
+      - ELASTICSEARCH_URL=http://elasticsearch:9200
+      # Point the tracer at the collector service rather than localhost --
+      # without a reachable endpoint every span is dropped at export time.
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_SERVICE_NAME=steel-rag-api
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      elasticsearch:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    volumes:
+      - ./src:/app/src
+      - ./data:/app/data
+      # Uploaded originals and everything derived from them. Without
+      # this volume every container recreation destroyed them while the
+      # database still listed the documents as indexed -- data loss with
+      # no error attached.
+      - uploads_data:/app/uploads
+      # Secret material, mounted read-only rather than COPY'd into the image.
+      # A credential baked into an image layer lives there permanently and is
+      # extractable by anyone who can pull the image -- and `docker history`
+      # will happily show you the layer. A mount keeps it on the host, and
+      # :ro means a compromised container cannot rewrite it.
+      - ./config:/app/config:ro
+      # Model cache. Without this, every container recreation re-downloads
+      # BGE-M3 (chunking embedder) and the BGE reranker from HuggingFace --
+      # hundreds of MB and several minutes of "unhealthy" on each `compose up`
+      # that happens to recreate the container. A named volume survives
+      # recreation, so the download happens once per machine.
+      - model_cache:/home/raguser/.cache
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # S3-compatible object storage for dev and on-prem. The application talks
+  # to this and to real AWS S3 through one code path, which is what lets a
+  # practice that cannot let drawings leave its network run this unchanged.
+  #
+  # AGPL-3.0: run as a container, never linked as a library.
+  # Ingestion worker. A separate process from the API on purpose: parsing a
+  # drawing set is minutes of CPU-bound work (CAD, OCR, layout inference,
+  # embedding), and running it inside the API meant one upload could starve
+  # every other request on a single-worker uvicorn -- and an API deploy
+  # mid-run silently abandoned the document.
+  worker:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    command: ["arq", "src.jobs.worker.WorkerSettings"]
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://steeluser:steelpass@postgres:5432/steeldb
+      - REDIS_URL=redis://redis:6379/0
+      - QDRANT_URL=http://qdrant:6333
+      - ELASTICSEARCH_URL=http://elasticsearch:9200
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_SERVICE_NAME=steel-rag-worker
+      - JOB_BACKEND=arq
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      elasticsearch:
+        condition: service_healthy
+    volumes:
+      - ./src:/app/src
+      # The worker reads originals from the same store the API wrote them to.
+      - uploads_data:/app/uploads
+      - ./config:/app/config:ro
+      # Shares the model cache with the API: both load the same embedding and
+      # reranking models, and downloading them twice serves no purpose.
+      - model_cache:/home/raguser/.cache
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:RELEASE.2024-10-13T13-34-11Z
+    command: server /data --console-address ":9001"
+    ports:
+      - "19000:9000"
+      - "19001:9001"
+    environment:
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # The React frontend. Static files behind nginx, which also reverse-proxies
+  # /api onto the API container so the browser only ever sees one origin --
+  # see docker/nginx/frontend.conf for why that is more than cosmetic.
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/frontend.Dockerfile
+      args:
+        # Vite inlines these at build time. `false` is the only correct value
+        # for a deployed container: the bundled sample corpus would render a
+        # convincing product full of drawings that do not exist.
+        VITE_USE_MOCKS: "false"
+        VITE_API_BASE: /api/v1
+        # Read from .env so the key lives in one place. Not a secret --
+        # see docker/frontend.Dockerfile.
+        VITE_FIREBASE_API_KEY: ${FIREBASE_WEB_API_KEY:-}
+    ports:
+      - "15173:8080"
+    depends_on:
+      api:
+        condition: service_started
+    restart: unless-stopped
+    healthcheck:
+      # 127.0.0.1, not localhost: the container resolves `localhost` to ::1
+      # as well as 127.0.0.1, and busybox wget tries ::1 first. nginx now
+      # binds both, but naming the address here means the check cannot be
+      # broken again by a listen directive it does not control.
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # The interim UI, kept for debugging the API directly and no longer started
+  # by default. It was built first deliberately -- to prove the endpoints
+  # before any React was written -- and the `frontend` service has since
+  # overtaken it on every page it has, adding drawings, revisions, ingest and
+  # access management on top. Two UIs racing to stay current is a cost with no
+  # return, but the Streamlit pages remain the quickest way to poke a new
+  # endpoint by hand, so they are gated rather than deleted.
+  #
+  #     docker compose --profile debug up streamlit
+  streamlit:
+    profiles: ["debug"]
+    build:
+      context: .
+      dockerfile: docker/streamlit.Dockerfile
+    ports:
+      - "18501:8501"
+    # Named individually rather than `env_file: .env`, which handed a UI
+    # container every secret in the project -- OpenAI, Anthropic, the JWT
+    # signing key, the Grafana password -- when it reads exactly these five.
+    # `FIREBASE_WEB_API_KEY` is the browser-side key and is meant to be
+    # public; the service account stays on the API, which is the only
+    # component that verifies tokens rather than obtaining them.
+    environment:
+      - API_BASE_URL=http://api:8000
+      - FIREBASE_ENABLED=${FIREBASE_ENABLED:-false}
+      - FIREBASE_WEB_API_KEY=${FIREBASE_WEB_API_KEY:-}
+      - FIREBASE_ALLOWED_DOMAINS=${FIREBASE_ALLOWED_DOMAINS:-}
+      - STREAMLIT_PAGE_TITLE=${STREAMLIT_PAGE_TITLE:-Steel Document Intelligence}
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: steeldb
+      POSTGRES_USER: steeluser
+      POSTGRES_PASSWORD: steelpass
+    ports:
+      - "15432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U steeluser -d steeldb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant:v1.12.4
+    ports:
+      - "16333:6333"
+      - "16334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    environment:
+      - QDRANT__SERVICE__GRPC_PORT=6334
+    restart: unless-stopped
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.16.1
+    # Without a fixed hostname the container is only known by its generated
+    # id, and log4j calls InetAddress.getLocalHost() before logging is even
+    # configured. When Docker's DNS cannot resolve that id -- which happens
+    # on Docker Desktop/WSL2 -- Elasticsearch dies during startup with
+    # "status logger logged an error before logging was configured", which
+    # names neither the real cause nor the container. A stable name is
+    # always resolvable.
+    hostname: elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    ports:
+      - "19200:9200"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -q '\"status\":\"green\"\\|\"status\":\"yellow\"'"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy volatile-lru
+    ports:
+      - "16379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ------------------------------------------------------------------
+  # Observability stack. The API has exported Prometheus metrics and OTLP
+  # spans all along; until these three services existed, nothing was on the
+  # receiving end of either -- which is indistinguishable, from the outside,
+  # from having no instrumentation at all.
+  # ------------------------------------------------------------------
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.115.1
+    command: ["--config=/etc/otel/collector.yaml"]
+    volumes:
+      - ./docker/otel/collector.yaml:/etc/otel/collector.yaml:ro
+    ports:
+      - "14317:4317"   # OTLP gRPC -- the endpoint configure_tracing() targets
+      - "14318:4318"   # OTLP HTTP
+      - "18888:8888"   # collector's own metrics
+      - "18889:8889"   # span-derived RED metrics
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.0.1
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=15d
+      - --web.enable-lifecycle
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./docker/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "19090:9090"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    environment:
+      # Dev-only anonymous admin access. In any shared environment this must
+      # be replaced with real credentials -- the dashboards expose audit and
+      # policy state.
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./docker/grafana/dashboards:/etc/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "13000:3000"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  uploads_data:
+  minio_data:
+  qdrant_data:
+  elasticsearch_data:
+  redis_data:
+  prometheus_data:
+  grafana_data:
+  model_cache:

@@ -1,0 +1,300 @@
+[project]
+name = "prod-rag"
+version = "1.0.0"
+description = "Enterprise Agentic RAG Platform"
+requires-python = ">=3.12"
+dependencies = [
+    # Web Framework
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "python-multipart>=0.0.12",
+
+    # Async / HTTP
+    "httpx>=0.27.0",
+    "aiofiles>=24.1.0",
+
+    # Database
+    "sqlalchemy[asyncio]>=2.0.36",
+    "asyncpg>=0.30.0",
+    "alembic>=1.14.0",
+    "psycopg2-binary>=2.9.10",
+
+    # Cache
+    "redis[hiredis]>=5.2.0",
+
+    # Job queue. arq is async-native and rides the Redis already running
+    # here -- no second broker, no separate result backend. Celery is
+    # prefork/thread-oriented and RQ is sync-only; both would mean running
+    # blocking workers beside an entirely async codebase.
+    "arq>=0.26",
+
+    # Vector Store
+    "qdrant-client>=1.12.0,<1.13.0",
+
+    # Search
+    "elasticsearch[async]>=8.16.0,<9.0.0",
+
+    # Document Parsing
+    "docling>=2.12.0",
+    "unstructured[all-docs]>=0.16.0",
+
+    # OCR (default local engine -- Tesseract; needs the system `tesseract-ocr`
+    # + `poppler-utils` binaries, see docker/api.Dockerfile). The importable
+    # OCR module itself is NOT listed here as its own dependency --
+    # `unstructured[all-docs]` (above) already transitively pulls in
+    # `unstructured-pytesseract`, a maintained drop-in fork of `pytesseract`
+    # published under a different PyPI name -- confirmed live that it ALSO
+    # installs under a different top-level module name
+    # (`import unstructured_pytesseract`, not `import pytesseract`; see
+    # src/ingestion/ocr/registry.py). Adding the original `pytesseract`
+    # package on top would still be redundant (same functionality, needless
+    # second dependency) even though the naming means it wouldn't literally
+    # conflict as previously assumed here.
+    "pdf2image>=1.17.0",
+
+    # Reads a PDF's own text layer, which is the only way to tell a drawing
+    # plotted from CAD from a scan of one: Docling OCRs a scanned page
+    # internally and returns the result as ordinary text, so by the time the
+    # pipeline sees it the two are identical. See
+    # src/ingestion/parsing/drawing_detector.py. Already resolved
+    # transitively via docling; declared because we import it directly.
+    # BSD-3, pure Python, no system libraries.
+    "pypdf>=5.0",
+
+    # CAD. ezdxf reads DXF natively (MIT, cp312 wheels for Windows and
+    # manylinux, pure-Python fallback). It cannot read DWG -- that needs the
+    # ODA File Converter, which the operator installs themselves because
+    # ODA's licence grants free use but not redistribution, so the binary
+    # cannot be baked into an image we publish. See src/ingestion/cad/.
+    #
+    # matplotlib is ezdxf's rendering backend. It is already resolved
+    # transitively via unstructured-inference and its system libraries are
+    # already in docker/api.Dockerfile; declared here because we import it
+    # directly, and a direct import on a transitive dependency breaks the day
+    # that dependency drops it.
+    "ezdxf>=1.3,<2",
+    "matplotlib>=3.9",
+
+    # Object storage. S3-compatible, so one code path covers MinIO for dev
+    # and on-prem and real S3 in cloud. Pins botocore transitively -- worth
+    # re-checking on every lock bump.
+    "aioboto3>=13.2",
+
+    # Embeddings / Reranking
+    "openai>=1.56.0",
+    "sentence-transformers>=3.3.0",
+    "tiktoken>=0.8.0",
+    "torch>=2.2.2,<3.0.0",
+    "torchvision>=0,<1",
+
+    # LLM Providers
+    "anthropic>=0.40.0",
+    "google-generativeai>=0.8.0",
+    "ollama>=0.4.0",
+
+    # LangChain / LangGraph
+    #
+    # Replaces hand-rolled machinery that has a well-maintained equivalent:
+    # the provider registry and fallback chain (ChatModel + with_fallbacks),
+    # the embedding cache (CacheBackedEmbeddings), RRF fusion
+    # (EnsembleRetriever), reranking and context compression
+    # (ContextualCompressionRetriever), and -- the largest one -- the custom
+    # node-graph workflow engine plus the manually-wired query pipeline,
+    # which both become a single LangGraph StateGraph.
+    #
+    # It deliberately does NOT replace the governance layer (clearance
+    # pre/post-filters, RBAC, audit, PII redaction) or the observability
+    # stack, neither of which LangChain has an equivalent for.
+    "langchain>=0.3.0",
+    "langchain-core>=0.3.0",
+    "langgraph>=0.2.0",
+    "langchain-openai>=0.2.0",
+    "langchain-anthropic>=0.3.0",
+    "langchain-huggingface>=0.1.0",
+    "langchain-qdrant>=0.2.0",
+    "langchain-elasticsearch>=0.3.0",
+    "langchain-cohere>=0.3.0",
+    "langchain-text-splitters>=0.3.0",
+
+    # Evaluation
+    #
+    # LangSmith is used for datasets and evaluators only -- runtime tracing
+    # stays on Langfuse, which is self-hostable. Traces carry prompt text and
+    # retrieved document content, and client structural drawings must not
+    # leave the network by default. LANGCHAIN_TRACING_V2 is therefore off
+    # unless explicitly enabled (see Settings.langsmith_tracing).
+    "langsmith>=0.1.140",
+
+    # Observability
+    "langfuse>=2.0.0",
+    "opentelemetry-sdk>=1.28.0",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.28.0",
+    "opentelemetry-instrumentation-fastapi>=0.49b0",
+    "opentelemetry-instrumentation-sqlalchemy>=0.49b0",
+    "prometheus-client>=0.21.0",
+    "structlog>=24.4.0",
+
+    # Validation / Config
+    "pydantic>=2.10.0",
+    "pydantic-settings>=2.6.0",
+    # Declared explicitly rather than relying on the transitive copy pulled in
+    # by docling/unstructured: src/governance/risk_register.py imports it
+    # directly, and a direct import on a transitive dependency breaks the day
+    # an unrelated package drops it.
+    "pyyaml>=6.0.2",
+    # Firebase ID token verification (src/auth/). Handles RS256 signature
+    # checking against Google's rotating public keys -- the part hand-rolled
+    # JWT verification reliably gets wrong.
+    "firebase-admin>=6.6.0",
+    "python-jose[cryptography]>=3.3.0",
+    "passlib[bcrypt]>=1.7.4",
+
+    # DI Container
+    "dependency-injector>=4.41.0",
+
+    # Utilities
+    "tenacity>=9.0.0",
+    "python-dotenv>=1.0.1",
+    "cohere>=5.11.0",
+
+    # UI
+    "streamlit>=1.40.0",
+    "plotly>=5.24.0",
+    "altair>=5.5.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-cov>=6.0.0",
+    "httpx>=0.27.0",
+    "factory-boy>=3.3.0",
+    "faker>=33.0.0",
+    "pytest-mock>=3.14.0",
+
+    # Lint and type-check. CI runs `uv sync --all-extras` then `uv run ruff`
+    # and `uv run mypy`, but neither tool was declared anywhere -- so both
+    # steps failed to resolve on a clean checkout. Declared here so the
+    # linters are part of the locked environment rather than an assumption
+    # about what happens to be on the runner.
+    "ruff>=0.8.0",
+    "mypy>=1.13.0",
+
+    # Integration tests spin real Postgres, Qdrant and Elasticsearch.
+    # Everything else in the suite is mocked, which cannot catch a wrong
+    # Qdrant filter shape or an Elasticsearch mapping that silently
+    # analyses a keyword field -- both of which change what a query
+    # returns without changing any unit test.
+    "testcontainers>=4.8",
+]
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+torchvision = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "SIM", "RUF"]
+ignore = [
+    "E501",
+    # `Depends(...)` in a parameter default is the FastAPI dependency-injection
+    # idiom, not the mutable-default bug B008 exists to catch. Every governed
+    # route uses it (see src/governance/rbac.py), so this must be an allowance
+    # rather than a per-line noqa on every endpoint.
+    "B008",
+    # `class X(str, Enum)` is this codebase's universal convention -- Route,
+    # ChunkType, Sensitivity, JobStatus and a dozen more. UP042 prefers
+    # StrEnum, but converting some and not others is worse than either, and
+    # converting all of them is churn with no behavioural gain.
+    "UP042",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Streamlit derives page order and titles from the filename, so `01_chat.py`
+# is required rather than sloppy.
+"src/ui/pages/*" = [
+    "N999",
+    # En dashes and angle quotes in user-facing copy are typography, not
+    # typos. RUF001 is guarding against homoglyph attacks in identifiers,
+    # which is not what a Streamlit caption is.
+    "RUF001",
+]
+"src/ui/*" = [
+    # `try/except/pass` around a best-effort UI refresh reads more clearly
+    # than contextlib.suppress at these call sites.
+    "SIM105",
+]
+
+[tool.ruff.lint.isort]
+# `src` is this project's own package, not a third-party one. Without this,
+# ruff's isort wants every `from src...` import merged into the third-party
+# block -- the opposite of how the entire codebase is written -- which is why
+# I001 accounted for roughly half of all lint errors on a clean checkout and
+# `ruff check` could never have passed. The `src = [...]` setting above tells
+# ruff where to *resolve* modules, not how to *classify* them.
+known-first-party = ["src"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+# The packages that genuinely pass strict today. CI checks these, so a
+# regression in them fails the build.
+#
+# This is a deliberate scope, not a pretence that the rest is typed. `strict
+# = true` was set at the start of the project and never enforced -- mypy was
+# not even a declared dependency -- so the untouched packages carry roughly
+# 190 pre-existing errors, mostly missing return annotations on route
+# handlers and bare `dict` generics. A permanently red job gets ignored and
+# stops catching anything; a scoped one catches regressions in the code it
+# covers. Widening it, package by package, is tracked work rather than a
+# thing to leave silently failing.
+files = [
+    "src/domain",
+    "src/application",
+    "src/jobs",
+    "src/llm",
+    "src/monitoring",
+    "src/plugins",
+    "src/routing",
+    "src/retrieval/graph",
+    "src/ingestion/cad",
+    "src/ingestion/extractors",
+    "src/ingestion/enrichers",
+    "src/infrastructure/storage",
+    "src/infrastructure/serialization",
+]
+ignore_missing_imports = true
+plugins = ["pydantic.mypy"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "--cov=src --cov-report=term-missing --cov-fail-under=80"
+markers = [
+    # Integration tests need Docker. They are not deselected by default --
+    # they skip themselves loudly when Docker is absent, because a
+    # silently-excluded integration suite is indistinguishable from a
+    # passing one.
+    "integration: requires real Postgres, Qdrant and Elasticsearch",
+]
+
+[tool.coverage.run]
+source = ["src"]
+omit = ["src/ui/*", "*/migrations/*"]

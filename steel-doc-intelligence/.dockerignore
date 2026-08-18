@@ -1,0 +1,62 @@
+# Environment / Secrets
+.env
+.env.*
+!.env.example
+
+# Git
+.git/
+.gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# IDE / Editor
+.vscode/
+.idea/
+.claude/
+
+# Docs / project metadata (not needed inside image)
+docs/
+# ...except the risk register, which is not documentation: the API loads it at
+# runtime for /governance/risks and /governance/status. It lives under docs/
+# so a reviewer finds it beside the governance write-ups, which means the
+# blanket docs/ exclusion silently removed it from the image.
+!docs/governance/risk_register.yaml
+README.md
+tests/
+
+# Frontend build inputs and outputs.
+#
+# `frontend/` itself must stay in the context -- docker/frontend.Dockerfile
+# builds from the repository root so it can COPY it. Only the two directories
+# that must never be copied are excluded: node_modules is ~200 MB of host
+# platform binaries that `npm ci` reinstalls correctly inside the image, and a
+# stale local `dist/` would be overwritten by the build stage anyway. A
+# `.dockerignore` inside frontend/ would have no effect -- Docker reads only
+# the one at the root of the build context.
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Project data
+uploads/*
+!uploads/.gitkeep
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db

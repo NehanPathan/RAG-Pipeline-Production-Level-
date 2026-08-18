@@ -1,0 +1,159 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    name: Lint & Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+      - run: uv sync --all-extras
+      - run: uv run ruff check src tests
+      - run: uv run ruff format --check src tests
+
+  type-check:
+    name: Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+      - run: uv sync --all-extras
+      # No path argument: the scope lives in pyproject.toml, so CI and a
+      # developer's local run check exactly the same thing.
+      - run: uv run mypy
+
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+      - run: uv sync --all-extras
+      - run: uv run pytest tests/unit/ -v --cov=src --cov-report=xml --cov-fail-under=80
+      - uses: codecov/codecov-action@v4
+        with:
+          file: coverage.xml
+          fail_ci_if_error: false
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      # `ci` rather than `install`: it installs exactly the lockfile and fails
+      # if package.json has drifted from it, which is the point of running here
+      # rather than on a developer machine.
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npm test
+      # The tests mock at the `api` boundary, so a page can pass them and still
+      # fail to compile into a bundle. Building is what catches that.
+      - run: npm run build
+
+      # Browser-level layout checks against the built bundle.
+      #
+      # jsdom has no layout engine, so a whole class of defect is invisible to
+      # the suite above: the collapsed sidebar once rendered every link as a
+      # bare 16px glyph with no hit target and no active state, and unit tests,
+      # typecheck and build were all green throughout. These measure real boxes
+      # in a real browser and would have failed on it.
+      #
+      # `--project=layout` only. The `visual` project compares screenshots, and
+      # its baselines are per-platform: font rasterisation differs between
+      # Windows, macOS and Linux, so the committed Windows baselines cannot pass
+      # here. `e2e/sidebar.visual.spec.ts` documents how to add Linux ones if
+      # pixel diffing is wanted in CI too.
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:layout
+
+  integration:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+      - run: uv sync --all-extras
+      # testcontainers starts real Postgres, Qdrant and Elasticsearch. The
+      # GitHub runner has a Docker daemon, so these actually execute here --
+      # unlike a developer machine without Docker, where they skip.
+      #
+      # `-p no:randomly` is deliberate: the session-scoped containers are
+      # expensive, and reordering tests across them buys nothing.
+      - run: uv run pytest tests/integration/ -v --no-cov
+        env:
+          # Elasticsearch's container needs more than the default heap the
+          # image assumes on a 2-core runner.
+          ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+
+
+  governance:
+    name: Governance Consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+      - run: uv sync --all-extras
+      # Fails the build when the risk register drifts from the code: a risk
+      # naming a metric that no longer exists, a control naming a deleted
+      # file, a metric declared but never recorded, or a threshold with no
+      # alert rule. This is what stops the governance docs from decaying into
+      # claims nobody checks.
+      - name: Validate risk register, metrics and alert rules
+        run: uv run python scripts/check_governance.py
+
+      # Catches an invalid Prometheus rule file before it reaches a cluster,
+      # where a bad rule silently disables every alert in its group.
+      - name: Validate Prometheus alert rules
+        run: |
+          docker run --rm -v "$PWD/docker/prometheus:/rules:ro" \
+            --entrypoint promtool prom/prometheus:v3.0.1 check rules /rules/alerts.yml
+
+  quality-gate:
+    name: Evaluation Quality Gate
+    runs-on: ubuntu-latest
+    # Only on PRs into main: the gate needs evaluation results, and running a
+    # full judged evaluation on every push to every branch costs real money.
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+      - run: uv sync --all-extras
+      # Verifies the gate itself enforces the policy floors. Wire the real
+      # scores in by pointing --from-api at a deployed environment that has a
+      # completed evaluation run; this smoke check proves the gate blocks a
+      # failing score rather than passing everything.
+      - name: Gate blocks a failing score
+        run: |
+          if uv run python scripts/eval_gate.py --scores faithfulness=0.10; then
+            echo "::error::eval_gate passed a score of 0.10 — the gate is not enforcing"
+            exit 1
+          fi
+          echo "Gate correctly rejected a failing score."
+      - name: Gate passes a healthy score
+        run: uv run python scripts/eval_gate.py --scores faithfulness=0.90,answer_relevancy=0.85,context_relevancy=0.80

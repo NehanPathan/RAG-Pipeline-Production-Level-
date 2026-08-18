@@ -1,0 +1,196 @@
+# Steel section gazetteer.
+#
+# Data, not code: adding a designation is a YAML edit, and the file can be
+# extended by a fabricator for their own stock without touching Python.
+#
+# This is what turns a pattern match into a *validated* one. The regexes below
+# are necessarily loose -- "W 12" and "L 50" look like ordinary prose -- so a
+# match is only accepted at high confidence when its prefix is a real section
+# family from a real standard. Without the gazetteer, "the beam spans W 12
+# metres" becomes an AISC wide-flange section.
+#
+# `depth_mm` is the nominal depth the designation encodes, used to sanity-check
+# a parsed size. Absent where the family does not encode depth in millimetres
+# (AISC designations are in inches, HSS in outside dimensions).
+
+version: 1
+
+families:
+  # ---- Indian Standard (IS 808) --------------------------------------
+  ISMB:
+    standard: IS 808
+    kind: i_beam
+    description: Indian Standard Medium Weight Beam
+    sizes: [100, 116, 125, 140, 150, 175, 200, 225, 250, 300, 350, 400, 450, 500, 550, 600]
+  ISLB:
+    standard: IS 808
+    kind: i_beam
+    description: Indian Standard Light Weight Beam
+    sizes: [75, 100, 125, 150, 175, 200, 225, 250, 275, 300, 325, 350, 400, 450, 500, 550, 600]
+  ISWB:
+    standard: IS 808
+    kind: i_beam
+    description: Indian Standard Wide Flange Beam
+    sizes: [150, 175, 200, 225, 250, 300, 350, 400, 450, 500, 550, 600]
+  ISHB:
+    standard: IS 808
+    kind: i_beam
+    description: Indian Standard Heavy Weight Beam
+    sizes: [150, 200, 225, 250, 300, 350, 400, 450]
+  ISJB:
+    standard: IS 808
+    kind: i_beam
+    description: Indian Standard Junior Beam
+    sizes: [150, 175, 200, 225]
+  ISMC:
+    standard: IS 808
+    kind: channel
+    description: Indian Standard Medium Weight Channel
+    sizes: [75, 100, 125, 150, 175, 200, 225, 250, 300, 350, 400]
+  ISLC:
+    standard: IS 808
+    kind: channel
+    description: Indian Standard Light Channel
+    sizes: [100, 125, 150, 200, 250, 300, 350, 400]
+  ISJC:
+    standard: IS 808
+    kind: channel
+    description: Indian Standard Junior Channel
+    sizes: [100, 125, 150, 175, 200]
+  ISA:
+    standard: IS 808
+    kind: angle
+    description: Indian Standard Equal/Unequal Angle
+  ISNB:
+    standard: IS 1239
+    kind: pipe
+    description: Indian Standard Nominal Bore pipe
+
+  # ---- European (EN 10365) -------------------------------------------
+  IPE:
+    standard: EN 10365
+    kind: i_beam
+    description: European I-beam, parallel flange
+    sizes: [80, 100, 120, 140, 160, 180, 200, 220, 240, 270, 300, 330, 360, 400, 450, 500, 550, 600]
+  IPN:
+    standard: EN 10365
+    kind: i_beam
+    description: European I-beam, tapered flange
+    sizes: [80, 100, 120, 140, 160, 180, 200, 220, 240, 260, 280, 300, 320, 340, 360, 380, 400]
+  HEA:
+    standard: EN 10365
+    kind: h_beam
+    description: European wide flange beam, light series
+    sizes: [100, 120, 140, 160, 180, 200, 220, 240, 260, 280, 300, 320, 340, 360, 400, 450, 500, 550, 600]
+  HEB:
+    standard: EN 10365
+    kind: h_beam
+    description: European wide flange beam, standard series
+    sizes: [100, 120, 140, 160, 180, 200, 220, 240, 260, 280, 300, 320, 340, 360, 400, 450, 500, 550, 600]
+  HEM:
+    standard: EN 10365
+    kind: h_beam
+    description: European wide flange beam, heavy series
+    sizes: [100, 120, 140, 160, 180, 200, 220, 240, 260, 280, 300, 320, 340, 360, 400]
+  UPN:
+    standard: EN 10365
+    kind: channel
+    description: European channel, tapered flange
+    sizes: [80, 100, 120, 140, 160, 180, 200, 220, 240, 260, 280, 300, 320, 350, 380, 400]
+
+  # ---- British (BS 4-1) ----------------------------------------------
+  UB:
+    standard: BS 4-1
+    kind: i_beam
+    description: Universal Beam
+  UC:
+    standard: BS 4-1
+    kind: h_beam
+    description: Universal Column
+  PFC:
+    standard: BS 4-1
+    kind: channel
+    description: Parallel Flange Channel
+
+  # ---- American (AISC) -----------------------------------------------
+  # Designations are in inches, so no depth_mm equivalence is asserted.
+  W:
+    standard: AISC
+    kind: h_beam
+    description: Wide flange shape
+  HP:
+    standard: AISC
+    kind: h_beam
+    description: Bearing pile
+  S:
+    standard: AISC
+    kind: i_beam
+    description: American Standard beam
+  C:
+    standard: AISC
+    kind: channel
+    description: American Standard channel
+  MC:
+    standard: AISC
+    kind: channel
+    description: Miscellaneous channel
+  L:
+    standard: AISC
+    kind: angle
+    description: Angle
+  WT:
+    standard: AISC
+    kind: tee
+    description: Tee cut from a W shape
+
+  # ---- Hollow sections ------------------------------------------------
+  HSS:
+    standard: AISC
+    kind: hollow
+    description: Hollow Structural Section
+  SHS:
+    standard: EN 10219
+    kind: hollow
+    description: Square Hollow Section
+  RHS:
+    standard: EN 10219
+    kind: hollow
+    description: Rectangular Hollow Section
+  CHS:
+    standard: EN 10219
+    kind: hollow
+    description: Circular Hollow Section
+
+# Steel grades, keyed by canonical form. `yield_mpa` is the nominal yield
+# strength the grade designates, which is what makes "Fe 415" and
+# "Fy = 415 MPa" recognisably the same claim.
+grades:
+  Fe 410: {standard: IS 2062, yield_mpa: 250}
+  Fe 415: {standard: IS 1786, yield_mpa: 415}
+  Fe 500: {standard: IS 1786, yield_mpa: 500}
+  Fe 550: {standard: IS 1786, yield_mpa: 550}
+  E 250: {standard: IS 2062, yield_mpa: 250}
+  E 300: {standard: IS 2062, yield_mpa: 300}
+  E 350: {standard: IS 2062, yield_mpa: 350}
+  E 410: {standard: IS 2062, yield_mpa: 410}
+  E 450: {standard: IS 2062, yield_mpa: 450}
+  S235: {standard: EN 10025, yield_mpa: 235}
+  S275: {standard: EN 10025, yield_mpa: 275}
+  S355: {standard: EN 10025, yield_mpa: 355}
+  S420: {standard: EN 10025, yield_mpa: 420}
+  S460: {standard: EN 10025, yield_mpa: 460}
+  A36: {standard: ASTM A36, yield_mpa: 250}
+  A572: {standard: ASTM A572, yield_mpa: 345}
+  A992: {standard: ASTM A992, yield_mpa: 345}
+  A500: {standard: ASTM A500, yield_mpa: 315}
+
+# Bolt property classes (IS 1367 / ISO 898-1). The class encodes strength:
+# the first number is tensile/100 MPa, the second the yield ratio.
+bolt_grades:
+  "4.6": {tensile_mpa: 400, yield_mpa: 240}
+  "4.8": {tensile_mpa: 400, yield_mpa: 320}
+  "5.6": {tensile_mpa: 500, yield_mpa: 300}
+  "5.8": {tensile_mpa: 500, yield_mpa: 400}
+  "8.8": {tensile_mpa: 800, yield_mpa: 640}
+  "10.9": {tensile_mpa: 1000, yield_mpa: 900}
+  "12.9": {tensile_mpa: 1200, yield_mpa: 1080}
