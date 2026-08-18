@@ -51,6 +51,60 @@ carried across, which is why roughly 70% of the two codebases is still shared.
 
 ---
 
+## What each one does
+
+Both share a core: documents in, chunked, embedded, stored three ways; questions
+out, routed, retrieved, reranked, answered with citations that are validated
+against what was actually retrieved.
+
+### `rag-core/` — the shared foundation
+
+* **Ingestion** — PDF, DOCX and images. OCR only on pages that need it, layout
+  analysis for headings, tables and figures, then four-pass chunking (structure →
+  semantic → parent/child → validate).
+* **Retrieval** — vector search and BM25 run in parallel and merge by Reciprocal
+  Rank Fusion, then a reranker reads query and candidate together and reorders.
+  A semantic cache short-circuits repeat questions.
+* **Answering** — streamed over SSE with `[n]` citations checked against the
+  retrieved chunks. No supporting passage means a refusal, not a guess.
+* **Routing and tools** — deterministic rules decide before any model call
+  whether a question needs the corpus at all; calculator, datetime, translation,
+  web search and a guarded SQL tool handle the ones that do not.
+* **Governance** — Firebase auth, RBAC, four-level clearance enforced as a
+  pre-filter *and* re-checked after retrieval, append-only audit, PII redaction,
+  retention, rate limiting, and a risk register CI validates against the code.
+* **Evaluation** — an LLM-judge suite with policy floors and a gate that fails
+  the build when quality drops.
+* **Interface** — Streamlit, including a retrieval inspector that shows what each
+  stage actually returned.
+
+### `steel-doc-intelligence/` — everything above, plus a domain
+
+* **Reads CAD as documents.** A DXF is geometry, not prose. It assembles leader
+  chains to work out which label belongs to which piece of steel, groups repeated
+  blocks into symbols, and finds drawn schedules by structure and content
+  together — declining a table it cannot read rather than guessing its rows.
+* **Steel entities** — section designations, grades, bolt and weld specs, piece
+  marks, drawing numbers, extracted by pattern and gazetteer so `ISMB300`,
+  `ISMB 300` and `I.S.M.B.-300` all retrieve the same chunk.
+* **Vision as a last resort.** When the answer is on the sheet but not in its
+  text — an unlabelled symbol, a hatch — it renders *only that region* and asks a
+  vision model. A low-confidence reading is discarded, and a vision reading can
+  never override an exact value read from the file.
+* **Projects and revisions.** Drawings supersede each other; search defaults to
+  the latest revision, because answering from a superseded sheet is worse than
+  not answering.
+* **Content screening and quarantine.** An upload that is not an engineering
+  document is held, not deleted, with the reason recorded so a steward can
+  disagree and release it — after which it is screened again.
+* **Background ingestion** on an arq worker with retries, so a restart mid-parse
+  does not strand a document in `processing` forever.
+* **Interface** — React 19 with a sheet viewer and highlight overlay, a faceted
+  search sidebar, an ops section for quality, access and governance, and voice
+  input for dictating a question.
+
+---
+
 ## Where to start
 
 **New to RAG?** Start with [`rag-core/docs/HOW_IT_WORKS.md`](rag-core/docs/HOW_IT_WORKS.md).
