@@ -41,6 +41,12 @@ export interface ApiSurface {
   }): Promise<T.UploadResponse>
   reclassifyDocument(id: string, sensitivity: T.Sensitivity, reason: string): Promise<T.DocumentSummary>
   reprocessDocument(id: string): Promise<{ document_id: string; job_id: string; status: string; message: string }>
+  /** Send a quarantined document back through *normal* ingestion. Not a
+   *  bypass: it is screened again and may be quarantined again. */
+  releaseDocument(
+    id: string,
+    reason?: string,
+  ): Promise<{ document_id: string; job_id: string; status: string; message: string }>
   deleteDocument(id: string): Promise<{ document_id: string; deleted_chunks: number; message: string }>
   originalUrl(id: string): string
 
@@ -63,6 +69,10 @@ export interface ApiSurface {
   ): AsyncGenerator<T.ChatStreamEvent, void, void>
   listConversations(limit?: number): Promise<T.ConversationSummary[]>
   getConversation(id: string): Promise<T.ConversationMessage[]>
+  /** Removes it from the caller's history. A soft delete server-side — the
+   *  messages survive so the feedback and evaluation samples hanging off them
+   *  are not destroyed along with the sidebar entry. */
+  deleteConversation(id: string): Promise<{ conversation_id: string; archived: boolean; message: string }>
 
   /* Retrieval inspection */
   inspectRetrieval(query: string): Promise<T.RetrievalInspection>

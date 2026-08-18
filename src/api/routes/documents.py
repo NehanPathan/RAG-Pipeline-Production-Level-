@@ -31,7 +31,7 @@ from src.api.dependencies import (
 )
 from src.api.dependencies_rate_limit import rate_limit_role
 from src.config import get_settings
-from src.domain.entities.document import Document, DocumentChunk
+from src.domain.entities.document import Document, DocumentChunk, DocumentStatus
 from src.domain.repositories.blob_store import BlobTooLargeError, document_key
 from src.domain.value_objects.document_intelligence import DocumentIntelligenceSummary
 from src.domain.value_objects.sensitivity import Sensitivity
@@ -65,6 +65,11 @@ class DocumentResponse(BaseModel):
     created_at: str
     sensitivity: str
     retention_until: str | None = None
+    # Why ingestion stopped: the failure for FAILED, the screening reason
+    # for QUARANTINED. A reviewer deciding whether to release a held
+    # document needs to see what held it, and without this the UI could
+    # only offer the button and not the grounds for pressing it.
+    error_message: str | None = None
 
 
 class ReclassifyRequest(BaseModel):
@@ -345,13 +350,10 @@ async def list_documents(
 ) -> DocumentListResponse:
     document_repo = get_document_repository()
     # Clearance is pushed into the query, so `total` counts only what this
-    # caller may read and every page is full. Filtering the page after the
-    # fact (the previous behaviour) disclosed an accurate count of documents
-    # the caller had no right to know existed, and returned short pages whose
-    # length revealed how many had been withheld.
-    # Reach includes the caller's projects, so the list agrees with what the
-    # detail endpoint will actually open. Fail closed on a lookup error:
-    # owner-only is a narrower answer, never a wider one.
+    # caller may read and every page is full. Filtering the page afterwards
+    # disclosed an accurate count of documents they had no right to know
+    # existed, and short pages revealed how many were withheld. Reach includes
+    # their projects; a lookup error fails closed to owner-only.
     project_ids: list[uuid.UUID] = []
     if principal.user_id is not None:
         try:
@@ -665,6 +667,7 @@ def _to_response(document: Document) -> DocumentResponse:
         retention_until=(
             document.retention_until.isoformat() if document.retention_until else None
         ),
+        error_message=document.error_message,
     )
 
 
@@ -904,4 +907,91 @@ async def download_original(
             "Content-Disposition": f'attachment; filename="{document.file_name}"',
             "X-Document-Id": str(document.id),
         },
+    )
+
+
+class ReleaseRequest(BaseModel):
+    """Why a human decided a quarantined document belongs in the corpus."""
+
+    reason: str = ""
+
+
+@router.post("/documents/{document_id}/release", response_model=ReprocessResponse)
+async def release_document(
+    document_id: str,
+    body: ReleaseRequest | None = None,
+    principal: Principal = Depends(require_role(Role.STEWARD, Role.ADMIN)),
+) -> ReprocessResponse:
+    """Send a quarantined document back through normal ingestion.
+
+    Release means "an authorised human reviewed this and wants ingestion to
+    proceed". It emphatically does **not** mean "skip the screen from now on":
+    the document is put back to PENDING and enqueued on the ordinary ingestion
+    job, so it is parsed, screened, classified and chunked exactly as an
+    upload is. A file that still fails the policy is quarantined again, and
+    that is the correct outcome -- a release that disabled the check would
+    turn one reviewer's judgement into a permanent hole in the control.
+
+    Reusing `enqueue_ingestion` rather than writing a shortcut is what
+    guarantees that. There is no path here into Qdrant or Elasticsearch that
+    does not go through the pipeline.
+    """
+    # Called for its side effect: 404s if the caller may not read it, which
+    # is also what stops this confirming that a restricted document exists.
+    document = await _load_readable_document(document_id, principal)
+    doc_uuid = uuid.UUID(document_id)
+
+    if document.status is not DocumentStatus.QUARANTINED:
+        # 409 rather than 400: the request is well formed and the caller is
+        # permitted, but the document is not in a state where release means
+        # anything. Saying so is more useful than silently re-ingesting.
+        raise HTTPException(
+            status_code=http_status.HTTP_409_CONFLICT,
+            detail=(
+                f"Document is {document.status.value}, not quarantined. "
+                "Use reprocess to re-run ingestion on a document that is not "
+                "being held back."
+            ),
+        )
+
+    if await get_job_repository().has_active_job(doc_uuid):
+        raise HTTPException(
+            status_code=http_status.HTTP_409_CONFLICT,
+            detail="Ingestion for this document is already in flight.",
+        )
+
+    previous = document.status.value
+    # Back to PENDING before the job is queued, so the queue and the document
+    # never disagree about whether it is waiting.
+    document.status = DocumentStatus.PENDING
+    document.error_message = None
+    await get_document_repository().update(document)
+
+    job = await enqueue_ingestion(doc_uuid, None, job_type=JobType.REINDEX_DOCUMENT)
+    await audit_record(
+        action=AuditAction.QUARANTINE_RELEASED,
+        actor_id=principal.user_id,
+        actor_role=principal.role,
+        resource_type="document",
+        resource_id=document_id,
+        outcome=AuditOutcome.COMPLETED,
+        reason=(body.reason if body and body.reason else "released for re-ingestion"),
+        before={"status": previous},
+        after={"status": DocumentStatus.PENDING.value, "job_id": str(job.id)},
+    )
+    logger.info(
+        "document_quarantine_released",
+        doc_id=document_id,
+        job_id=str(job.id),
+        actor=str(principal.user_id),
+        previous_status=previous,
+    )
+    return ReprocessResponse(
+        document_id=document_id,
+        job_id=str(job.id),
+        status=job.status.value,
+        message=(
+            "Released. The document re-enters normal ingestion and is screened "
+            "again — if it still fails the content policy it will be quarantined."
+        ),
     )

@@ -48,6 +48,7 @@ def build_query_graph(pipeline: Any) -> Any:
     graph.add_node("off_pipeline", nodes.answer_off_pipeline)
     graph.add_node("retrieve", nodes.retrieve)
     graph.add_node("context", nodes.build_context)
+    graph.add_node("vision", nodes.vision_fallback)
     graph.add_node("generate", nodes.generate)
 
     graph.add_edge(START, "kill_switch")
@@ -62,9 +63,8 @@ def build_query_graph(pipeline: Any) -> Any:
         "off_pipeline", _after_off_pipeline, {"retrieve": "retrieve", "stop": END}
     )
     graph.add_edge("retrieve", "context")
-    graph.add_conditional_edges(
-        "context", _stop_if_finished, {"continue": "generate", "stop": END}
-    )
+    graph.add_conditional_edges("context", _stop_if_finished, {"continue": "vision", "stop": END})
+    graph.add_edge("vision", "generate")
     graph.add_edge("generate", END)
 
     return graph.compile()

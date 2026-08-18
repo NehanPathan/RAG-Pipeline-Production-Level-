@@ -34,14 +34,10 @@ class DoclingLoader(DocumentLoader):
         return mime_type in SUPPORTED_MIMES or file_extension.lower() in SUPPORTED_EXTENSIONS
 
     async def load(self, file_path: Path) -> RawDocument:
-        # `converter.convert()` is a synchronous, CPU-bound call (Docling's
-        # own layout/table/OCR model inference, often 30-90+ seconds for a
-        # real PDF) -- run via `asyncio.to_thread` so it doesn't block the
-        # event loop for its entire duration. Previously ran directly on the
-        # event loop; with only one uvicorn worker (see docker/api.Dockerfile),
-        # that froze the *entire* API -- including unrelated health checks
-        # and other requests -- for as long as this took. Found during
-        # Phase 4A verification (docs/architecture/12_phase4a_design_review.md).
+        # `converter.convert()` is synchronous and CPU-bound -- Docling's own layout,
+        # table and OCR inference, often 30-90s for a real PDF -- so it runs via
+        # `asyncio.to_thread`. On the event loop with a single uvicorn worker it
+        # froze the entire API, health checks included, for its whole duration.
         return await asyncio.to_thread(self._parse, file_path)
 
     def _parse(self, file_path: Path) -> RawDocument:

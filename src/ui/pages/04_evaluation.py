@@ -76,7 +76,6 @@ with tab_overview:
             f"Completed: **{latest.get('completed_at', '—')}**"
         )
 
-        # KPI cards
         kpi_keys = list(METRIC_LABELS.keys())
         cols = st.columns(len(kpi_keys))
         for col, key in zip(cols, kpi_keys, strict=False):

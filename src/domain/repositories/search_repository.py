@@ -37,6 +37,9 @@ class BM25SearchFilter:
     # Restrict to a provenance class -- e.g. only chunks read from CAD, where
     # dimensions are exact rather than OCR'd off a plotted sheet.
     content_kinds: list[str] | None = None
+    # CAD layers. On a structural drawing the layer *is* the semantics,
+    # so "what is on S-BOLTS" is a filter, not a question about meaning.
+    layers: list[str] | None = None
 
 
 @dataclass
@@ -48,8 +51,7 @@ class BM25ScoredChunk:
 
 class SearchRepository(ABC):
     @abstractmethod
-    async def index_batch(self, chunks: list[DocumentChunk]) -> None:
-        ...
+    async def index_batch(self, chunks: list[DocumentChunk]) -> None: ...
 
     @abstractmethod
     async def search(
@@ -57,8 +59,7 @@ class SearchRepository(ABC):
         query: str,
         top_k: int = 20,
         filters: BM25SearchFilter | None = None,
-    ) -> list[BM25ScoredChunk]:
-        ...
+    ) -> list[BM25ScoredChunk]: ...
 
     @abstractmethod
     async def update_fields_by_document(
@@ -94,9 +95,7 @@ class SearchRepository(ABC):
         ...
 
     @abstractmethod
-    async def delete_by_document(self, document_id: uuid.UUID) -> int:
-        ...
+    async def delete_by_document(self, document_id: uuid.UUID) -> int: ...
 
     @abstractmethod
-    async def create_index_if_not_exists(self) -> None:
-        ...
+    async def create_index_if_not_exists(self) -> None: ...

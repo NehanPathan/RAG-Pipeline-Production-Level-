@@ -34,5 +34,7 @@ class CitationPreserver:
                 # would leave every Docling-parsed citation sectionless.
                 section=chunk.chunk_metadata.section_title or chunk.chunk_metadata.section,
                 document_id=chunk.document_id,
+                regions=list(chunk.chunk_metadata.regions),
+                region_precision=chunk.chunk_metadata.region_precision,
             )
         return citations

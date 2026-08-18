@@ -327,3 +327,25 @@ def metric_names() -> set[str]:
         if metric.type == "counter":
             names.add(f"{metric.name}_total")
     return names
+
+
+# Vision fallback. Labelled by outcome *and* reason because the operator's
+# question is never "how many vision calls" on its own -- it is "how many, and
+# why", and the refusals are the interesting half.
+vision_fallback_total = Counter(
+    "vision_fallback_total",
+    "Vision fallback decisions, by outcome and escalation reason.",
+    ["outcome", "reason"],
+)
+
+vision_fallback_latency = Histogram(
+    "vision_fallback_latency_seconds",
+    "Wall time of one vision provider call.",
+    buckets=(0.5, 1, 2, 5, 10, 20, 60),
+)
+
+vision_cache_events = Counter(
+    "vision_cache_events_total",
+    "Vision observation cache hits and misses.",
+    ["outcome"],
+)

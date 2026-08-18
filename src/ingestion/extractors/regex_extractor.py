@@ -119,15 +119,11 @@ _LOAD_WINDOW = 45
 # consumes every alphanumeric token on a drawing -- grid references, sheet
 # sizes, scale ratios and all.
 _IDENTIFIER_PATTERNS = {
-    # The optional trailing group is a *sheet variant* -- `S-104-A`, `S-104-01`
-    # -- and is joined by a hyphen, never by whitespace. It used to accept
-    # `[\s\-]`, and `\s` matches a newline, so a title block reading
-    #     DRAWING NO: S-104
-    #     REV: C
-    # extracted `S-104-REV`, and `SEE DWG S-101 FOR SECTION` extracted
-    # `S-101-FOR`. Worse than cosmetic: the same sheet number followed by
-    # different words became several distinct entities, so the drawing
-    # number could never be identified by repetition, and the
+    # The optional trailing group is a *sheet variant* (`S-104-A`, `S-104-01`),
+    # joined by a hyphen and never whitespace. It once accepted `[\s\-]`, and
+    # `\s` matches a newline, so "DRAWING NO: S-104 / REV: C" extracted
+    # `S-104-REV`. The same sheet then became several distinct entities, so a
+    # drawing number could never be identified by repetition and the
     # `drawing_number` facet filled with values matching nothing.
     SteelEntityType.DRAWING_NUMBER: re.compile(
         r"\b(?:DWG|DRG|DRAWING|SHEET)\s*(?:NO\.?|NUMBER|#)?\s*[:\-]?\s*"

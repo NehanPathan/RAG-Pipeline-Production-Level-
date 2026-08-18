@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import re
 import statistics
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
+from src.domain.value_objects.provenance import Region
 from src.ingestion.chunkers.structure_chunker import StructuralSection
 from src.ingestion.embedders.base import EmbeddingProvider
 
@@ -21,6 +22,13 @@ class SemanticSegment:
     # has no finer confidence signal to offer, so every segment derived from
     # a section carries that section's figure.
     ocr_confidence: float | None = None
+    # Likewise inherited. Splitting by sentence has no sentence-to-rectangle
+    # map to work from, so a segment knows where its *section* was, not where
+    # its own sentences were. `region_precision` is what stops that being
+    # read as more than it is -- a soft highlight over the section rather
+    # than a tight box around the wrong words.
+    regions: list[Region] = field(default_factory=list)
+    layers: list[str] = field(default_factory=list)
 
 
 class SemanticChunker:
@@ -63,6 +71,8 @@ class SemanticChunker:
                     heading_level=section.heading_level,
                     is_table=True,
                     ocr_confidence=section.ocr_confidence,
+                    regions=list(section.regions),
+                    layers=list(section.layers),
                 )
             ]
 
@@ -75,6 +85,8 @@ class SemanticChunker:
                     section_title=section.section_title,
                     heading_level=section.heading_level,
                     ocr_confidence=section.ocr_confidence,
+                    regions=list(section.regions),
+                    layers=list(section.layers),
                 )
             ]
 
@@ -93,6 +105,8 @@ class SemanticChunker:
                         section_title=section.section_title,
                         heading_level=section.heading_level,
                         ocr_confidence=section.ocr_confidence,
+                        regions=list(section.regions),
+                        layers=list(section.layers),
                     )
                 )
             start = boundary

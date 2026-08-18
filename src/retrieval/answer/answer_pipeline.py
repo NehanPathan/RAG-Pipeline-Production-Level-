@@ -89,4 +89,6 @@ class AnswerPipeline:
             "document_id": str(citation.document_id) if citation.document_id else None,
             "page_number": citation.page_number,
             "section": citation.section,
+            "regions": [region.to_dict() for region in citation.regions],
+            "region_precision": citation.region_precision,
         }

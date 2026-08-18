@@ -7,6 +7,7 @@ from fastapi import status as http_status
 from pydantic import BaseModel
 
 from src.api.dependencies import get_conversation_repository
+from src.domain.entities.conversation import Message
 from src.governance.rbac import Principal, get_principal
 from src.monitoring.logger import get_logger
 from src.monitoring.prometheus_metrics import access_denied
@@ -96,6 +97,65 @@ async def get_conversation(
         ) from None
 
     messages = await repo.get_messages(conversation_uuid)
+    return _to_message_out(messages)
+
+
+@router.delete("/conversations/{conversation_id}")
+async def delete_conversation(
+    conversation_id: str,
+    principal: Principal = Depends(get_principal),
+) -> dict:
+    """Remove a conversation from the caller's history.
+
+    A soft delete, and the response says so rather than implying the data is
+    gone. The rows behind it are load-bearing elsewhere: `user_feedback`
+    cascades from `messages`, so a hard delete would take the ratings that
+    feed the golden dataset and the quality gate with it — a user tidying
+    their sidebar would be shrinking the evidence base for answer quality,
+    silently. `online_eval_samples` would likewise lose its link back to the
+    answer it scored.
+
+    Ownership is enforced inside the UPDATE, not by a preceding check, and a
+    row that does not match returns 404 rather than 403 — matching
+    `get_conversation` above, where a 403 would confirm that a conversation
+    with that id exists.
+    """
+    try:
+        conversation_uuid = uuid.UUID(conversation_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=http_status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="conversation_id is not a valid UUID.",
+        ) from None
+
+    archived = await get_conversation_repository().archive(conversation_uuid, principal.user_id)
+    if not archived:
+        access_denied.labels(reason="conversation_not_owned").inc()
+        logger.warning(
+            "conversation_delete_denied",
+            conversation_id=conversation_id,
+            user_id=str(principal.user_id),
+        )
+        raise HTTPException(
+            status_code=http_status.HTTP_404_NOT_FOUND, detail="Conversation not found"
+        ) from None
+
+    logger.info(
+        "conversation_archived",
+        conversation_id=conversation_id,
+        user_id=str(principal.user_id),
+    )
+    return {
+        "conversation_id": conversation_id,
+        "archived": True,
+        "message": (
+            "Removed from your history. The messages are retained so the "
+            "ratings and evaluation samples attached to them stay intact."
+        ),
+    }
+
+
+def _to_message_out(messages: list[Message]) -> list[MessageOut]:
     return [
         MessageOut(
             id=str(m.id),

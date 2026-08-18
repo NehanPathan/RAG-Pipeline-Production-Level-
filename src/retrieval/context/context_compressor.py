@@ -53,24 +53,19 @@ class ContextCompressor:
     async def _compress_one(self, query: str, chunk: RerankedChunk) -> CompressedChunk | None:
         original = chunk.chunk.content
 
-        # Nothing to trim, so nothing to ask. Compression exists to cut a long
-        # passage down to its relevant part; a short chunk has no fat, and the
-        # call stops being "extract the relevant sentences" and becomes "judge
-        # whether this is relevant at all" -- a different question, which this
-        # prompt answers badly.
+        # Nothing to trim, so nothing to ask. Compression cuts a long passage down to
+        # its relevant part; on a short chunk the call becomes "is this relevant at
+        # all", a different question this prompt answers badly.
         #
-        # It answers it badly in one direction in particular. A drawing chunk
-        # is `DRAWING NO: SSD09.0-01 / REV: A` or `BEAM B-14 ISMB 300 Fe 415`:
-        # no sentences, so a prompt asking for "the sentences that are
-        # relevant" returns NONE. Every chunk of a CAD sheet was therefore
-        # discarded here, retrieval reported seven results, and the grounding
-        # gate refused for want of context -- the answer being "I can't answer
-        # that from the indexed documents" about a drawing that was indexed,
-        # correct, and sitting in the results.
+        # Badly in one direction especially. A drawing chunk is `DRAWING NO:
+        # SSD09.0-01 / REV: A` -- no sentences, so a prompt asking for the relevant
+        # sentences returns NONE. Every CAD chunk was discarded here and the
+        # grounding gate then refused for want of context, answering "I can't answer
+        # that from the indexed documents" about a drawing sitting in the results.
         #
-        # The reranker has already scored these, and the token budget still
-        # caps the total, so admitting a short chunk costs a few tokens
-        # against silently losing every drawing in the corpus.
+        # The reranker has already scored these and the token budget still caps the
+        # total, so admitting a short chunk costs a few tokens against losing every
+        # drawing in the corpus.
         if len(original) < self._min_chars_to_compress:
             return CompressedChunk(reranked=chunk, compressed_content=original)
 

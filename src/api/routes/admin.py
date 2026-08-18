@@ -8,10 +8,11 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.governance.audit import AuditAction, AuditOutcome
 from src.governance.audit import record as audit_record
+from src.governance.policy import get_policy
 from src.governance.rbac import Principal, Role, require_role
 from src.governance.runtime_flags import SETTINGS_KEY as FLAGS_KEY
 from src.infrastructure.database.postgres.connection import get_session_factory
-from src.infrastructure.database.postgres.models import SystemSettingModel
+from src.infrastructure.database.postgres.models import SystemSettingModel, UserModel
 from src.monitoring.logger import get_logger
 
 router = APIRouter()
@@ -145,3 +146,58 @@ async def _load_stored() -> dict:
         key: (value.get("value") if isinstance(value, dict) and "value" in value else value)
         for key, value in rows
     }
+
+
+class UserOut(BaseModel):
+    """One account, as the access screen renders it.
+
+    Deliberately narrow. `hashed_password` exists on the table and is never
+    populated -- Firebase owns credentials -- but a user endpoint is exactly
+    the place a column like that leaks by accident, so the response model
+    names its fields rather than dumping the row.
+    """
+
+    user_id: str
+    email: str
+    role: str
+    clearance: str
+    auth_provider: str
+    authenticated: bool
+    display_name: str | None = None
+
+
+@router.get("/users", response_model=list[UserOut])
+async def list_users(
+    principal: Principal = Depends(require_role(Role.STEWARD, Role.ADMIN)),
+) -> list[UserOut]:
+    """Every account, for the access screen.
+
+    Steward and admin only: a roster of who exists, with what role and what
+    clearance, is a map of the blast radius and not something a viewer needs.
+
+    Clearance is derived from the role through the policy rather than stored
+    per user, so this reports what the policy would grant today -- change the
+    role-to-clearance mapping and this screen changes with it, which is the
+    behaviour an operator checking "who can read restricted drawings" needs.
+    """
+    policy = get_policy()
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        rows = (await session.execute(select(UserModel).order_by(UserModel.email))).scalars().all()
+
+    return [
+        UserOut(
+            user_id=str(row.id),
+            email=row.email,
+            role=row.role,
+            clearance=policy.clearance_for_role(row.role).value,
+            # `firebase_uid` present means the account signs in against
+            # Firebase; the rows without one are seeded local identities that
+            # only resolve when `FIREBASE_REQUIRE_AUTH` is off.
+            auth_provider="firebase" if row.firebase_uid else "local",
+            authenticated=bool(row.firebase_uid),
+            display_name=row.display_name,
+        )
+        for row in rows
+        if row.is_active
+    ]

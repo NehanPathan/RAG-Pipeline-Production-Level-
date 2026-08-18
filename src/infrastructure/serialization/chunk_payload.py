@@ -21,6 +21,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from src.domain.entities.document import ChunkMetadata, ChunkType, DocumentChunk
+from src.domain.value_objects.provenance import Region
 from src.domain.value_objects.sensitivity import Sensitivity
 
 
@@ -60,6 +61,14 @@ def chunk_to_payload(chunk: DocumentChunk) -> dict[str, Any]:
         # Provenance quality: filterable so "only chunks read from CAD" is a
         # query rather than a guess.
         "content_kind": chunk.chunk_metadata.content_kind,
+        # Where on the page. Stored, never indexed or filtered on -- these are
+        # coordinates for a viewer to draw, and indexing thousands of float
+        # subfields per document would cost a great deal and return nothing.
+        "regions": [region.to_dict() for region in chunk.chunk_metadata.regions],
+        "region_precision": chunk.chunk_metadata.region_precision,
+        # Indexed keyword list. A drawing question is structural far more
+        # often than semantic -- "what is on S-BOLTS" wants a filter.
+        "layers": sorted(set(chunk.chunk_metadata.layers)),
     }
 
 
@@ -100,10 +109,19 @@ def payload_to_chunk(payload: Mapping[str, Any], chunk_id: uuid.UUID) -> Documen
             # designations it contains would make the entity filter's own
             # results unexplainable.
             entities=[
-                {"canonical": canonical}
-                for canonical in (payload.get("entity_canonicals") or [])
+                {"canonical": canonical} for canonical in (payload.get("entity_canonicals") or [])
             ],
             content_kind=payload.get("content_kind"),
+            # A malformed region costs a highlight, not an answer, so
+            # `from_dict` returns None rather than raising and those are
+            # dropped here.
+            regions=[
+                region
+                for region in (Region.from_dict(raw) for raw in (payload.get("regions") or []))
+                if region is not None
+            ],
+            region_precision=payload.get("region_precision"),
+            layers=list(payload.get("layers") or []),
         ),
         user_id=_optional_uuid(payload.get("user_id")),
         domain=payload.get("domain"),

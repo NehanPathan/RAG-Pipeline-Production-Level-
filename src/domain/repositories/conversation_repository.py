@@ -49,9 +49,7 @@ class ConversationRepository(ABC):
     async def get_messages(self, conversation_id: uuid.UUID) -> list[Message]: ...
 
     @abstractmethod
-    async def list_by_user(
-        self, user_id: uuid.UUID, limit: int = 50
-    ) -> list[ConversationSummary]:
+    async def list_by_user(self, user_id: uuid.UUID, limit: int = 50) -> list[ConversationSummary]:
         """Recent conversations belonging to one user.
 
         Scoped by `user_id` in the query rather than filtered afterwards: a
@@ -63,6 +61,26 @@ class ConversationRepository(ABC):
     @abstractmethod
     async def owns(self, conversation_id: uuid.UUID, user_id: uuid.UUID) -> bool:
         """Whether this user owns the conversation — checked before any read."""
+        ...
+
+    @abstractmethod
+    async def archive(self, conversation_id: uuid.UUID, user_id: uuid.UUID) -> bool:
+        """Remove a conversation from the user's history.
+
+        Deliberately a soft delete (`conversations.is_active = false`), which
+        is what `list_by_user` has always filtered on, rather than a row
+        delete. A hard delete cascades `conversations → messages →
+        user_feedback`, so clearing old chats would silently destroy the
+        ratings the quality gate and the golden dataset are built from — the
+        user would be tidying their sidebar and shrinking the evidence base
+        for model quality at the same time, with nothing to say so.
+
+        Scoped by `user_id` in the statement itself rather than after an
+        `owns()` check, so there is no window between the check and the write.
+
+        Returns False when no row matched — either it does not exist or it
+        belongs to someone else. The caller must not distinguish the two.
+        """
         ...
 
     @abstractmethod

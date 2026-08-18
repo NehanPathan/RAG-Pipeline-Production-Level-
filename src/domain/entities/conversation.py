@@ -6,6 +6,8 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
+from src.domain.value_objects.provenance import Region
+
 
 class MessageRole(str, Enum):
     USER = "user"
@@ -25,6 +27,11 @@ class Citation:
     # unique nor stable, and there is no way to invalidate cached answers
     # when the document behind them is deleted (see semantic cache purge).
     document_id: uuid.UUID | None = None
+    # Where on the page the cited text sits. What turns a citation from "this
+    # drawing says so" into "it says so *here*" -- on a detail sheet those are
+    # very different claims, because the first cannot be checked.
+    regions: list[Region] = field(default_factory=list)
+    region_precision: str | None = None
 
 
 @dataclass

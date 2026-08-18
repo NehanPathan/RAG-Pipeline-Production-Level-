@@ -42,6 +42,11 @@ class TextBlock:
     # own legibility -- a drawing with one illegible stamp should not lose
     # its legible schedule.
     ocr_confidence: float | None = None
+    # CAD layers this block's content came from. Empty for every prose
+    # loader, which has no such concept. On a structural drawing the layer is
+    # the semantics -- S-BOLTS, S-SECT_STEEL, S-DIMS -- so carrying it makes
+    # "what is on the bolts layer" a filter rather than a similarity guess.
+    layers: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -52,6 +57,7 @@ class TableBlock:
     row_count: int = 0
     col_count: int = 0
     bbox: BoundingBox | None = None
+    layers: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -84,14 +90,11 @@ class DocumentLoader(ABC):
     """Abstract base for all document loaders."""
 
     @abstractmethod
-    def supports(self, mime_type: str, file_extension: str) -> bool:
-        ...
+    def supports(self, mime_type: str, file_extension: str) -> bool: ...
 
     @abstractmethod
-    async def load(self, file_path: Path) -> RawDocument:
-        ...
+    async def load(self, file_path: Path) -> RawDocument: ...
 
     @property
     @abstractmethod
-    def name(self) -> str:
-        ...
+    def name(self) -> str: ...

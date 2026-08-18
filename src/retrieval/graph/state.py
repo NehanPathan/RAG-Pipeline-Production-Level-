@@ -42,6 +42,11 @@ class QueryState(TypedDict, total=False):
     # Retrieval (modules A-D) and context (module E)
     inspection: Any
     compressed_chunks: list[CompressedChunk]
+    #: What the vision fallback decided and, if it ran, what it saw.
+    #: Present on every retrieval answer including the ones that did not
+    #: escalate, because "vision was not called" is the common case and
+    #: the one an operator most often needs explained.
+    vision: Any
     citations: dict[uuid.UUID, Any]
 
     # Generation (module G)

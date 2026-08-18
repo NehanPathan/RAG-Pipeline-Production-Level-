@@ -10,6 +10,9 @@ import {
   LayoutListIcon,
   RefreshCwIcon,
   ScanTextIcon,
+  Loader2Icon,
+  ShieldAlertIcon,
+  ShieldCheckIcon,
   ShieldIcon,
   Trash2Icon,
   TriangleAlertIcon,
@@ -25,6 +28,7 @@ import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/input"
+import { Input } from "@/components/ui/input"
 import { Label, Progress, ScrollArea, Separator, Skeleton } from "@/components/ui/misc"
 import {
   Select,
@@ -131,6 +135,23 @@ export default function DocumentDetailPage() {
       void queryClient.invalidateQueries({ queryKey: ["jobs"] })
     },
     onError: (error) => toast.error("Could not queue reprocessing", { description: message(error) }),
+  })
+
+  const [releaseOpen, setReleaseOpen] = React.useState(false)
+  const [releaseReason, setReleaseReason] = React.useState("")
+
+  const release = useMutation({
+    mutationFn: () => api.releaseDocument(documentId, releaseReason.trim()),
+    onSuccess: (result) => {
+      setReleaseOpen(false)
+      setReleaseReason("")
+      toast.success("Released for re-ingestion", { description: result.message })
+      void queryClient.invalidateQueries({ queryKey: ["document", documentId] })
+      void queryClient.invalidateQueries({ queryKey: ["document-jobs", documentId] })
+      void queryClient.invalidateQueries({ queryKey: ["jobs"] })
+      void queryClient.invalidateQueries({ queryKey: ["documents"] })
+    },
+    onError: (error) => toast.error("Could not release", { description: message(error) }),
   })
 
   const remove = useMutation({
@@ -308,6 +329,72 @@ export default function DocumentDetailPage() {
             Chunks, entities and layout appear as each stage completes. Pages that need OCR are
             routed individually — a scan among four clean pages does not force a full re-OCR.
           </p>
+        </Card>
+      )}
+
+      {doc?.status === "quarantined" && (
+        <Card className="mt-4 border-warn/35 bg-warn-soft/40 p-3">
+          <p className="flex items-center gap-2 text-sm font-medium text-warn">
+            <ShieldAlertIcon className="size-4" />
+            Quarantined before indexing
+          </p>
+          <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
+            {doc.error_message ??
+              "The ingestion screen held this document back. It was parsed but never chunked, embedded or made retrievable."}
+          </p>
+          {hasRole("steward", "admin") && (
+            <>
+              <Button
+                size="sm"
+                className="mt-2.5"
+                onClick={() => setReleaseOpen(true)}
+                disabled={release.isPending}
+              >
+                {release.isPending ? (
+                  <Loader2Icon className="animate-spin" />
+                ) : (
+                  <ShieldCheckIcon />
+                )}
+                Release / re-ingest
+              </Button>
+              <AlertDialog open={releaseOpen} onOpenChange={setReleaseOpen}>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>Release this document?</AlertDialogTitle>
+                    <AlertDialogDescription>
+                      It re-enters <strong>normal ingestion</strong> and is screened again. This
+                      is not an exemption: if it still fails the content policy it will be
+                      quarantined a second time. Your name and reason are written to the audit
+                      log.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <div className="px-6">
+                    <Label htmlFor="release-reason" className="text-xs">
+                      Reason (optional)
+                    </Label>
+                    <Input
+                      id="release-reason"
+                      className="mt-1"
+                      placeholder="Reviewed — it is a legitimate transmittal"
+                      value={releaseReason}
+                      onChange={(event: React.ChangeEvent<HTMLInputElement>) => setReleaseReason(event.target.value)}
+                      disabled={release.isPending}
+                    />
+                  </div>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel disabled={release.isPending}>Cancel</AlertDialogCancel>
+                    <Button
+                      onClick={() => release.mutate()}
+                      disabled={release.isPending}
+                    >
+                      {release.isPending && <Loader2Icon className="animate-spin" />}
+                      Release
+                    </Button>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+            </>
+          )}
         </Card>
       )}
 

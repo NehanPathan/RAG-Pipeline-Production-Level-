@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -76,9 +76,7 @@ class PostgresConversationRepository(ConversationRepository):
             model = await session.get(MessageModel, message_id)
             return _to_entity(model) if model else None
 
-    async def list_by_user(
-        self, user_id: uuid.UUID, limit: int = 50
-    ) -> list[ConversationSummary]:
+    async def list_by_user(self, user_id: uuid.UUID, limit: int = 50) -> list[ConversationSummary]:
         async with self._session_factory() as session:
             # One aggregate query rather than N+1: a sidebar showing 50
             # conversations must not issue 50 message queries.
@@ -133,6 +131,32 @@ class PostgresConversationRepository(ConversationRepository):
                 )
             )
             return result.first() is not None
+
+    async def archive(self, conversation_id: uuid.UUID, user_id: uuid.UUID) -> bool:
+        """Flip `is_active` off, scoped to the owner in the same statement.
+
+        `list_by_user` has always filtered on `is_active`, so this is the
+        writer for a read path that already existed. Ownership is part of the
+        WHERE clause rather than a preceding `owns()` call: with the check
+        separate there is a window in which the conversation could change
+        hands, and the update would apply to a row the caller no longer owns.
+        """
+        async with self._session_factory() as session:
+            result = await session.execute(
+                update(ConversationModel)
+                .where(
+                    ConversationModel.id == conversation_id,
+                    ConversationModel.user_id == user_id,
+                    ConversationModel.is_active.is_(True),
+                )
+                .values(is_active=False)
+            )
+            await session.commit()
+
+        # rowcount is 0 both when the conversation does not exist and when it
+        # belongs to someone else. The route turns both into a 404 so the two
+        # stay indistinguishable to the caller.
+        return bool(result.rowcount)
 
     async def get_question_for_answer(self, message_id: uuid.UUID) -> str | None:
         async with self._session_factory() as session:

@@ -35,6 +35,9 @@ export type DocumentStatus =
   | "processing"
   | "indexed"
   | "failed"
+  /** Screened out before indexing: stored, never retrievable. Distinct
+   *  from "failed", which means the file could not be read at all. */
+  | "quarantined"
   | "deleted"
 
 /** "Is this an exact CAD value, a plotted string, or OCR's reading of one?" */
@@ -52,6 +55,9 @@ export interface DocumentSummary {
   file_name: string
   file_type: string
   status: DocumentStatus
+  /** Why ingestion stopped: the failure for "failed", the screening
+   *  reason for "quarantined". */
+  error_message?: string | null
   page_count: number | null
   word_count: number | null
   domain: string | null
@@ -257,9 +263,12 @@ export interface ProjectMember {
   project_id: string
   user_id: string
   project_role: ProjectRole
-  added_at: string
+  added_at: string | null
   email: string
-  display_name: string
+  /** Nullable at the source: `users.display_name` is a nullable column and
+   *  `MemberResponse` passes it through as `str | None`. Falling back to the
+   *  email is what every render site should do. */
+  display_name: string | null
   platform_role: Role
 }
 
@@ -501,14 +510,31 @@ export interface FeedbackResponse {
   ignored_tags: string[]
 }
 
+/**
+ * `GET /feedback/summary`.
+ *
+ * Only the first five fields are real. The endpoint is declared `-> dict` with
+ * no response model, so nothing on either side validates this shape, and the
+ * three optional fields below were declared here as required before the
+ * aggregate that would produce them existed. `by_tag` being typed as present
+ * is what turned an empty feedback table into a blank page: `Object.keys(
+ * undefined)` throws, and a throw during render unmounts the whole app.
+ *
+ * They stay in the type because the UI is built for them and the server may
+ * grow them. They are optional so the compiler forces every read to say what
+ * it does when they are absent, which is the normal case today.
+ */
 export interface FeedbackSummary {
   window_hours: number
   total: number
-  positive: number
   negative: number
+  negative_rate: number
   average_rating: number | null
-  by_tag: Record<string, number>
-  /* PLANNED — recent comments make the summary actionable. */
+  /* Not sent today — the summary counts negatives, not positives. */
+  positive?: number
+  /* Not sent today — no per-tag aggregate exists server-side. */
+  by_tag?: Record<string, number>
+  /* Not sent today — recent comments would make the summary actionable. */
   recent?: FeedbackEntry[]
 }
 

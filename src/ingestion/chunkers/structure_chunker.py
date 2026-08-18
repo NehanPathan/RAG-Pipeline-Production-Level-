@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
+from src.domain.value_objects.provenance import Region
+from src.ingestion.loaders.base import BoundingBox
 from src.ingestion.parsing.parsed_document import ParsedDocument
 
 
@@ -17,6 +19,32 @@ class StructuralSection:
     # judge each chunk on its own legibility rather than on the document
     # average -- see ChunkValidator.validate.
     ocr_confidence: float | None = None
+    # Boxes of the blocks that contributed, so a chunk cut from this section
+    # can say where on the page it came from. Accumulated in parallel with
+    # `text` -- the two are flushed together, which is what keeps them
+    # describing the same content.
+    regions: list[Region] = field(default_factory=list)
+    # CAD layers the contributing blocks came from, in first-seen
+    # order. Empty for prose.
+    layers: list[str] = field(default_factory=list)
+
+
+def _region_of(bbox: BoundingBox | None, page_number: int | None) -> Region | None:
+    """A block's box as a region, or None when it has neither box nor page.
+
+    Blocks without a box are the common case on prose loaders, and a region
+    invented for them would be a rectangle around nothing.
+    """
+    if bbox is None or page_number is None:
+        return None
+    return Region(
+        page_number=page_number,
+        x0=bbox.x0,
+        y0=bbox.y0,
+        x1=bbox.x1,
+        y1=bbox.y1,
+        space=bbox.space,
+    )
 
 
 def _mean_confidence(values: list[float]) -> float | None:
@@ -46,6 +74,8 @@ class StructureChunker:
         buffer: list[str] = []
         buffer_page: int | None = None
         buffer_confidences: list[float] = []
+        buffer_regions: list[Region] = []
+        buffer_layers: list[str] = []
         list_buffer: list[str] = []
         list_page: int | None = None
 
@@ -59,7 +89,8 @@ class StructureChunker:
             list_page = None
 
         def flush_section() -> None:
-            nonlocal buffer, buffer_page, buffer_confidences
+            nonlocal buffer, buffer_page, buffer_confidences, buffer_regions
+            nonlocal buffer_layers
             flush_list()
             text = "\n\n".join(part for part in buffer if part.strip())
             if text.strip():
@@ -70,11 +101,15 @@ class StructureChunker:
                         section_title=current_heading_text,
                         heading_level=current_heading_level,
                         ocr_confidence=_mean_confidence(buffer_confidences),
+                        regions=Region.merge(buffer_regions),
+                        layers=list(buffer_layers),
                     )
                 )
             buffer = []
             buffer_page = None
             buffer_confidences = []
+            buffer_regions = []
+            buffer_layers = []
 
         for block in parsed_document.raw.text_blocks:
             text = block.text.strip()
@@ -92,18 +127,12 @@ class StructureChunker:
                 )
                 continue
 
-            # A page boundary ends a section, even mid-heading. A section is
-            # labelled with one page number, so one that spans five pages
-            # claims to be on the first of them -- and every chunk cut from
-            # it inherits that claim, which is what a citation quotes.
-            #
-            # Found by a five-page fixture whose only heading was on page 5:
-            # pages 1 to 4 merged into a single section reported as page 1,
-            # so pages 3 and 4 produced no separately-citable chunk at all.
-            # A paragraph running across a break is split, which is the
-            # right trade: a chunk can only cite one page, so this makes the
-            # page it cites true. The heading carries over, so a section
-            # continuing onto the next page keeps its title.
+            # A page boundary ends a section, even mid-heading. A section carries one
+            # page number, so one spanning five pages claims to be on the first -- and
+            # every chunk cut from it inherits that claim, which is what a citation
+            # quotes. Found by a five-page fixture whose only heading was on page 5:
+            # pages 3 and 4 produced no separately-citable chunk at all. Splitting a
+            # paragraph across a break is the right trade; the heading carries over.
             if (
                 buffer_page is not None
                 and block.page_number is not None
@@ -113,6 +142,12 @@ class StructureChunker:
 
             if block.ocr_confidence is not None:
                 buffer_confidences.append(block.ocr_confidence)
+            region = _region_of(block.bbox, block.page_number)
+            if region is not None:
+                buffer_regions.append(region)
+            for layer in block.layers:
+                if layer not in buffer_layers:
+                    buffer_layers.append(layer)
 
             if label == "list_item":
                 list_buffer.append(text)
@@ -135,6 +170,10 @@ class StructureChunker:
                     page_number=table.page_number,
                     section_title=table.caption or None,
                     is_table=True,
+                    regions=Region.merge(
+                        [r for r in [_region_of(table.bbox, table.page_number)] if r]
+                    ),
+                    layers=list(table.layers),
                 )
             )
 

@@ -23,7 +23,7 @@ export const realApi: ApiSurface = {
   },
 
   async listUsers() {
-    return notImplemented("GET /users")
+    return request<T.Principal[]>("/users")
   },
 
   async listDocuments({ page = 1, size = 20, search }) {
@@ -123,6 +123,13 @@ export const realApi: ApiSurface = {
     return request(`/documents/${id}/reprocess`, { method: "POST" })
   },
 
+  releaseDocument(id, reason) {
+    return request(`/documents/${id}/release`, {
+      method: "POST",
+      body: { reason: reason ?? "" },
+    })
+  },
+
   deleteDocument(id) {
     return request(`/documents/${id}`, { method: "DELETE" })
   },
@@ -181,6 +188,10 @@ export const realApi: ApiSurface = {
 
   getConversation(id) {
     return request<T.ConversationMessage[]>(`/conversations/${id}`)
+  },
+
+  deleteConversation(id) {
+    return request(`/conversations/${id}`, { method: "DELETE" })
   },
 
   inspectRetrieval(query) {

@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any
 
+from src.domain.value_objects.provenance import Region
 from src.domain.value_objects.sensitivity import Sensitivity
 
 
@@ -14,6 +15,11 @@ class DocumentStatus(str, Enum):
     PROCESSING = "processing"
     INDEXED = "indexed"
     FAILED = "failed"
+    # Screened out before indexing: stored and readable by a steward, but
+    # never chunked, embedded or retrievable. Distinct from FAILED, which
+    # means "we could not read it" rather than "we read it and it does not
+    # belong here".
+    QUARANTINED = "quarantined"
 
 
 class ChunkType(str, Enum):
@@ -112,6 +118,18 @@ class Document:
         self.error_message = error
         self.updated_at = datetime.utcnow()
 
+    def mark_quarantined(self, reason: str) -> None:
+        """Screened out of the corpus, with the reason kept.
+
+        Not deleted and not failed. The file stays where it is and a steward
+        can read the reason and disagree -- a false quarantine has to be
+        recoverable, because the alternative is a user whose legitimate
+        drawing vanished with no explanation.
+        """
+        self.status = DocumentStatus.QUARANTINED
+        self.error_message = reason
+        self.updated_at = datetime.utcnow()
+
 
 @dataclass
 class ChunkMetadata:
@@ -142,6 +160,23 @@ class ChunkMetadata:
     # string -- an answer quoting a measurement should be able to say which.
     # See src/ingestion/parsing/drawing_detector.py.
     content_kind: str | None = None
+    # Where on the sheet this chunk's text sits, so a citation resolves to a
+    # rectangle rather than to a whole drawing. A list because a chunk spans
+    # several blocks and the box enclosing all of them would cover the gaps
+    # between as well. See src/domain/value_objects/provenance.py.
+    regions: list[Region] = field(default_factory=list)
+    # How precisely: "block" when the regions came from the blocks' own
+    # boxes, "section" when inherited from a parent whose text was split
+    # further, "page" when only the page is known. Stated rather than implied
+    # so a viewer can draw a tight box or a soft one instead of pretending to
+    # a precision it does not have.
+    region_precision: str | None = None
+    # CAD layers this chunk's content came from. Denormalised onto both
+    # search payloads as an indexed keyword list, which is what turns
+    # "what is on S-BOLTS" into a filter instead of a similarity guess --
+    # and a drawing question is structural far more often than it is
+    # semantic. Empty for prose, which has no layers.
+    layers: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -191,6 +226,7 @@ class DocumentChunk:
     @property
     def content_hash(self) -> str:
         import hashlib
+
         return hashlib.sha256(self.content.encode()).hexdigest()
 
     def has_embedding(self) -> bool:

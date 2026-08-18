@@ -18,6 +18,7 @@ import {
   LockIcon,
   ScanLineIcon,
   ShieldIcon,
+  ShieldAlertIcon,
   SlashIcon,
   UsersIcon,
 } from "lucide-react"
@@ -133,6 +134,11 @@ const DOC_STATUS_META: Record<
   processing: { label: "Processing", variant: "technical", icon: LoaderIcon },
   pending: { label: "Queued", variant: "idle", icon: CircleDashedIcon },
   failed: { label: "Failed", variant: "error", icon: AlertTriangleIcon },
+  // Warn, not error: nothing went wrong, the file was read and judged out
+  // of scope. It is recoverable by a steward, which "error" would not
+  // suggest -- and falling through to the "Queued" default would have
+  // told the user it was still being processed.
+  quarantined: { label: "Quarantined", variant: "warn", icon: ShieldAlertIcon },
   deleted: { label: "Deleted", variant: "idle", icon: SlashIcon },
 }
 

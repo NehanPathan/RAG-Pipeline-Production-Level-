@@ -40,7 +40,9 @@ class UserModel(Base):
     email_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
     api_keys: Mapped[list[APIKeyModel]] = relationship("APIKeyModel", back_populates="user")
     documents: Mapped[list[DocumentModel]] = relationship("DocumentModel", back_populates="user")
@@ -50,7 +52,9 @@ class APIKeyModel(Base):
     __tablename__ = "api_keys"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE")
+    )
     key_hash: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -58,8 +62,6 @@ class APIKeyModel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     user: Mapped[UserModel] = relationship("UserModel", back_populates="api_keys")
-
-
 
 
 class JobModel(Base):
@@ -191,7 +193,9 @@ class DocumentModel(Base):
     __tablename__ = "documents"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE")
+    )
     file_name: Mapped[str] = mapped_column(String(500), nullable=False)
     file_type: Mapped[str] = mapped_column(String(50), nullable=False)
     file_size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
@@ -202,7 +206,9 @@ class DocumentModel(Base):
     word_count: Mapped[int | None] = mapped_column(Integer)
     loader_used: Mapped[str | None] = mapped_column(String(100))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
     indexed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     # Governance MAP columns (see docs/governance/GM3_FRAMEWORK.md). Both are
@@ -254,7 +260,9 @@ class DocumentMetadataModel(Base):
     __tablename__ = "document_metadata"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    document_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"), unique=True)
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"), unique=True
+    )
     summary: Mapped[str | None] = mapped_column(Text)
     tags: Mapped[list[str] | None] = mapped_column(ARRAY(String))
     domain: Mapped[str | None] = mapped_column(String(100))
@@ -264,15 +272,21 @@ class DocumentMetadataModel(Base):
     enriched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     enrichment_model: Mapped[str | None] = mapped_column(String(100))
 
-    document: Mapped[DocumentModel] = relationship("DocumentModel", back_populates="metadata_record")
+    document: Mapped[DocumentModel] = relationship(
+        "DocumentModel", back_populates="metadata_record"
+    )
 
 
 class DocumentChunkModel(Base):
     __tablename__ = "document_chunks"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    document_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"))
-    parent_chunk_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("document_chunks.id", ondelete="CASCADE"))
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE")
+    )
+    parent_chunk_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("document_chunks.id", ondelete="CASCADE")
+    )
     chunk_type: Mapped[str] = mapped_column(String(20), nullable=False, default="child")
     content: Mapped[str] = mapped_column(Text, nullable=False)
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -301,12 +315,10 @@ class DocumentChunkModel(Base):
 
     # The remaining denormalized fields, given a system of record here.
     #
-    # These are written into the Qdrant payload and the Elasticsearch
-    # document body at ingest, and `user_id` is the tenant filter every
-    # retrieval runs against. Until now they existed *only* in those two
-    # stores, which made Postgres unable to reconstruct a chunk faithfully --
-    # so any code path that reloaded chunks and re-indexed silently wiped the
-    # tenant filter, and no backfill or re-index tool was possible at all.
+    # They are written into the Qdrant payload and the Elasticsearch body at
+    # ingest, and `user_id` is the tenant filter every retrieval runs against.
+    # Existing *only* there meant Postgres could not reconstruct a chunk, so any
+    # path that reloaded and re-indexed silently wiped the tenant filter.
     # See migration 0004 and scripts/reindex_chunks.py.
     user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     domain: Mapped[str | None] = mapped_column(String(100))
@@ -329,6 +341,13 @@ class DocumentChunkModel(Base):
     # search backends from Postgres, and anything without a system of record
     # here is silently erased by a reindex.
     content_kind: Mapped[str | None] = mapped_column(String(32))
+    # Highlight rectangles. JSONB rather than columns because a chunk
+    # spans several blocks; unindexed because nothing queries a rectangle.
+    regions: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    region_precision: Mapped[str | None] = mapped_column(String(16))
+    # CAD layers, as an array because an annotation belongs to both the
+    # layer its text sits on and the layer of the geometry it labels.
+    layers: Mapped[list] = mapped_column(ARRAY(String), nullable=False, default=list)
 
     document: Mapped[DocumentModel] = relationship("DocumentModel", back_populates="chunks")
 
@@ -360,20 +379,28 @@ class ConversationModel(Base):
     __tablename__ = "conversations"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE")
+    )
     title: Mapped[str | None] = mapped_column(String(500))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
-    messages: Mapped[list[MessageModel]] = relationship("MessageModel", back_populates="conversation")
+    messages: Mapped[list[MessageModel]] = relationship(
+        "MessageModel", back_populates="conversation"
+    )
 
 
 class MessageModel(Base):
     __tablename__ = "messages"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    conversation_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("conversations.id", ondelete="CASCADE"))
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("conversations.id", ondelete="CASCADE")
+    )
     role: Mapped[str] = mapped_column(String(20), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     citations: Mapped[dict] = mapped_column(JSONB, default=list)
@@ -384,7 +411,9 @@ class MessageModel(Base):
     langfuse_trace_id: Mapped[str | None] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
-    conversation: Mapped[ConversationModel] = relationship("ConversationModel", back_populates="messages")
+    conversation: Mapped[ConversationModel] = relationship(
+        "ConversationModel", back_populates="messages"
+    )
 
 
 class EvaluationRunModel(Base):
@@ -404,14 +433,18 @@ class EvaluationRunModel(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     error_message: Mapped[str | None] = mapped_column(Text)
 
-    metrics: Mapped[list[EvaluationMetricModel]] = relationship("EvaluationMetricModel", back_populates="run")
+    metrics: Mapped[list[EvaluationMetricModel]] = relationship(
+        "EvaluationMetricModel", back_populates="run"
+    )
 
 
 class EvaluationMetricModel(Base):
     __tablename__ = "evaluation_metrics"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    run_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("evaluation_runs.id", ondelete="CASCADE"))
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("evaluation_runs.id", ondelete="CASCADE")
+    )
     metric_name: Mapped[str] = mapped_column(String(100), nullable=False)
     value: Mapped[float] = mapped_column(Float, nullable=False)
     aggregation: Mapped[str] = mapped_column(String(20), default="mean")
@@ -453,7 +486,9 @@ class SystemSettingModel(Base):
     value: Mapped[dict] = mapped_column(JSONB, nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
     updated_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
 
 class AuditLogModel(Base):

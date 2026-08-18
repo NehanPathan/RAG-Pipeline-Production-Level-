@@ -39,7 +39,6 @@ router = APIRouter()
 logger = get_logger(__name__)
 
 
-# --- payloads --------------------------------------------------------------
 
 
 class CreateProjectRequest(BaseModel):
@@ -129,7 +128,6 @@ class RevisionResponse(BaseModel):
     created_at: datetime | None
 
 
-# --- access ----------------------------------------------------------------
 
 
 async def _membership(project_id: uuid.UUID, principal: Principal) -> ProjectRole:
@@ -159,7 +157,6 @@ async def _require_can_write(project_id: uuid.UUID, principal: Principal) -> Pro
     return role
 
 
-# --- projects --------------------------------------------------------------
 
 
 @router.post("/projects", response_model=ProjectResponse, status_code=201)
@@ -247,7 +244,6 @@ async def get_project(
     )
 
 
-# --- members ---------------------------------------------------------------
 
 
 @router.get("/projects/{project_id}/members", response_model=list[MemberResponse])
@@ -311,7 +307,6 @@ async def remove_member(
     )
 
 
-# --- drawings and revisions ------------------------------------------------
 
 
 @router.get("/projects/{project_id}/drawings", response_model=list[DrawingResponse])
@@ -467,7 +462,6 @@ async def list_revisions(
     ]
 
 
-# --- shaping ---------------------------------------------------------------
 
 
 def _status_value(document: object) -> str | None:

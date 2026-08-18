@@ -32,6 +32,7 @@ INDEXED_PAYLOAD_FIELDS = (
     "sensitivity",
     "entity_canonicals",
     "content_kind",
+    "layers",
     "project_id",
     "drawing_id",
     "is_latest",
@@ -62,7 +63,11 @@ class QdrantVectorRepository(VectorRepository):
                     field_name=field_name,
                     field_schema=qdrant_models.PayloadSchemaType.KEYWORD,
                 )
-            logger.info("qdrant_collection_created", collection=self._collection_name, vector_size=vector_size)
+            logger.info(
+                "qdrant_collection_created",
+                collection=self._collection_name,
+                vector_size=vector_size,
+            )
 
     async def ensure_payload_indexes(self) -> None:
         """Add payload indexes to a collection that already existed.
@@ -216,9 +221,7 @@ class QdrantVectorRepository(VectorRepository):
                 reachable.append(
                     qdrant_models.FieldCondition(
                         key="project_id",
-                        match=qdrant_models.MatchAny(
-                            any=[str(p) for p in filters.project_ids]
-                        ),
+                        match=qdrant_models.MatchAny(any=[str(p) for p in filters.project_ids]),
                     )
                 )
             conditions.append(qdrant_models.Filter(should=reachable))

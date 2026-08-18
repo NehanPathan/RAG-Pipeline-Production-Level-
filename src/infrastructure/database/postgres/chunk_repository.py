@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.domain.entities.document import ChunkMetadata, ChunkType, DocumentChunk
 from src.domain.repositories.document_repository import ChunkRepository
+from src.domain.value_objects.provenance import Region
 from src.domain.value_objects.sensitivity import Sensitivity
 from src.infrastructure.database.postgres.models import DocumentChunkModel
 
@@ -63,6 +64,9 @@ class PostgresChunkRepository(ChunkRepository):
                         revision_label=chunk.revision_label,
                         is_latest=chunk.is_latest,
                         content_kind=chunk.chunk_metadata.content_kind,
+                        regions=[r.to_dict() for r in chunk.chunk_metadata.regions],
+                        region_precision=chunk.chunk_metadata.region_precision,
+                        layers=sorted(set(chunk.chunk_metadata.layers)),
                     )
                 )
             await session.commit()
@@ -86,9 +90,7 @@ class PostgresChunkRepository(ChunkRepository):
             )
             return [_to_entity(model) for model in result.scalars().all()]
 
-    async def set_sensitivity(
-        self, document_id: uuid.UUID, sensitivity: Sensitivity
-    ) -> int:
+    async def set_sensitivity(self, document_id: uuid.UUID, sensitivity: Sensitivity) -> int:
         """Reclassify every chunk of a document in one statement.
 
         A bulk UPDATE rather than load-mutate-save: reclassification touches
@@ -108,12 +110,16 @@ class PostgresChunkRepository(ChunkRepository):
     async def delete_by_document(self, document_id: uuid.UUID) -> int:
         async with self._session_factory() as session:
             ids = (
-                await session.execute(
-                    select(DocumentChunkModel.id).where(
-                        DocumentChunkModel.document_id == document_id
+                (
+                    await session.execute(
+                        select(DocumentChunkModel.id).where(
+                            DocumentChunkModel.document_id == document_id
+                        )
                     )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             if ids:
                 await session.execute(
                     sa_delete(DocumentChunkModel).where(
@@ -144,6 +150,12 @@ def _to_entity(model: DocumentChunkModel) -> DocumentChunk:
             ocr_confidence=model.ocr_confidence,
             language=model.language,
             content_kind=model.content_kind,
+            # A malformed rectangle costs a highlight, not an answer.
+            regions=[
+                r for r in (Region.from_dict(raw) for raw in (model.regions or [])) if r is not None
+            ],
+            region_precision=model.region_precision,
+            layers=list(model.layers or []),
         ),
         qdrant_point_id=model.qdrant_point_id,
         created_at=model.created_at,

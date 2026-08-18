@@ -4,6 +4,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
+from typing import Any
 
 from src.domain.repositories.project_repository import ProjectRepository
 from src.domain.repositories.search_repository import BM25ScoredChunk
@@ -108,6 +109,7 @@ class QueryPipeline:
         direct_llm: LLMProvider | None = None,
         project_repo: ProjectRepository | None = None,
         latest_only: bool = True,
+        vision_fallback: Any = None,
     ) -> None:
         self._query_agent = query_agent
         self._hybrid_retriever = hybrid_retriever
@@ -128,6 +130,11 @@ class QueryPipeline:
         # sending every query down the RAG path.
         self._router = router
         self._direct_llm = direct_llm
+        # Optional for the same reason as the router: without it the graph's
+        # vision node is a no-op and every answer is deterministic, which is
+        # exactly the behaviour a deployment without a vision-capable
+        # provider should get.
+        self._vision_fallback = vision_fallback
         # Optional so every existing construction site and unit test keeps
         # working: with no project repository the access scope is owner-only,
         # exactly as it was before projects existed.
@@ -380,9 +387,7 @@ class QueryPipeline:
         handling to display it.
         """
         answers_total.labels(outcome="refused").inc()
-        query_latency.labels(intent=intent, provider=provider).observe(
-            time.perf_counter() - start
-        )
+        query_latency.labels(intent=intent, provider=provider).observe(time.perf_counter() - start)
         logger.warning(
             "answer_refused",
             control_id=decision.control_id,
@@ -414,9 +419,7 @@ class QueryPipeline:
         history: Sequence[tuple[str, str]] | None = None,
     ) -> RetrievalInspection:
         start = time.perf_counter()
-        processed = await self._query_agent.process(
-            query, user_id=user_id, history=history
-        )
+        processed = await self._query_agent.process(query, user_id=user_id, history=history)
         query_processing_ms = int((time.perf_counter() - start) * 1000)
 
         # MAP: overwrite whatever FilterGenerator produced for these fields.
@@ -427,9 +430,7 @@ class QueryPipeline:
         # access scope decides reach (whose documents are visible at all).
         # They are independent, and both must pass -- a project member still
         # cannot read a `restricted` document above their clearance.
-        processed.filters.apply_clearance(
-            Sensitivity.values_at_or_below(principal.clearance)
-        )
+        processed.filters.apply_clearance(Sensitivity.values_at_or_below(principal.clearance))
         processed.filters.apply_access_scope(
             user_id=user_id, project_ids=await self._project_ids_for(principal)
         )

@@ -4,30 +4,25 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    # App
     app_env: str = "development"
     app_secret_key: str = "change-me"
     app_debug: bool = False
     log_level: str = "INFO"
 
-    # Database
     database_url: str = "postgresql+asyncpg://raguser:ragpass@localhost:5432/ragdb"
     database_pool_size: int = 20
     database_max_overflow: int = 10
 
-    # Redis
     redis_url: str = "redis://localhost:6379/0"
     redis_ttl_embedding: int = 86400
     redis_ttl_query: int = 3600
     redis_ttl_session: int = 3600
 
-    # Qdrant
     qdrant_url: str = "http://localhost:6333"
     qdrant_api_key: str = ""
     qdrant_collection_name: str = "document_chunks"
     qdrant_cache_collection_name: str = "semantic_query_cache"
 
-    # Elasticsearch
     elasticsearch_url: str = "http://localhost:9200"
     elasticsearch_index_name: str = "document_chunks"
     elasticsearch_username: str = ""
@@ -120,15 +115,11 @@ class Settings(BaseSettings):
 
     # Object storage (src/infrastructure/storage/).
     #
-    # Originals previously went to a local directory that docker-compose did
-    # not mount as a volume, so every container restart destroyed them while
-    # the database still listed the documents as indexed. `local` remains the
-    # default because it needs nothing running, but it now means a real
-    # implementation of the port with a volume behind it.
-    #
-    # `s3` covers MinIO and real S3 through the same code path, which is what
-    # lets a practice that cannot let drawings leave its network run this
-    # unchanged.
+    # Originals once went to a directory compose did not mount, so every restart
+    # destroyed them while the database still said `indexed`. `local` remains the
+    # default but now means a real port implementation with a volume behind it.
+    # `s3` covers MinIO and real S3 through one code path, which is what lets a
+    # practice that cannot let drawings leave its network run this unchanged.
     blob_store_provider: str = "local"  # local | s3
     blob_local_root: str = "./uploads/blobs"
     blob_bucket: str = "steel-documents"
@@ -168,7 +159,6 @@ class Settings(BaseSettings):
     max_file_size_mb: int = 100
     allowed_file_types: str = "pdf,docx,txt,md,html,png,jpg,jpeg,tiff,bmp,dxf,dwg"
 
-    # OCR
     ocr_provider: str = "tesseract"  # tesseract | paddle | baidu_unlimited
     ocr_min_words_per_page: float = 10.0
     paddle_ocr_lang: str = "en"
@@ -192,7 +182,6 @@ class Settings(BaseSettings):
     # came wholly from OCR of an image.
     chunk_validator_min_ocr_confidence_drawing: float = 0.15
 
-    # Query Intelligence
     query_expansion_count: int = 3
 
     # Retrieval
@@ -201,13 +190,31 @@ class Settings(BaseSettings):
     rerank_top_n: int = 10
     rrf_k: int = 60
 
-    # Context Processing
     context_max_tokens: int = 6000
 
-    # Semantic Cache
     semantic_cache_score_threshold: float = 0.95
 
-    # Answer Generation
+    # -- Vision fallback (Phase 6) -------------------------------------
+    # Which role's provider answers image questions. `large` because a crop
+    # of a drawing is exactly the case where the cheaper model's reading is
+    # not worth having.
+    vision_llm_role: str = "large"
+    # Most a single question may cost, in provider calls. Twenty retrieved
+    # chunks must never mean twenty calls.
+    vision_max_calls_per_query: int = 2
+    vision_max_regions: int = 2
+    # Longest edge of the crop sent. Image tokens are the expensive part.
+    vision_max_image_pixels: int = 1024
+    vision_timeout_seconds: float = 20.0
+    # Below this, an observation is discarded rather than added to the
+    # context: a model that is unsure has produced a guess, and a guess in
+    # the context is a guess in the answer.
+    vision_min_observation_confidence: float = 0.45
+    # Highest classification that may be rendered and sent to an external
+    # provider. A crop of a restricted drawing is restricted content.
+    vision_max_sensitivity: str = "internal"
+    vision_cache_ttl_seconds: int = 86_400
+
     answer_max_tokens: int = 1024
     answer_temperature: float = 0.3
 
@@ -217,21 +224,17 @@ class Settings(BaseSettings):
     jwt_access_token_expire_minutes: int = 60
     jwt_refresh_token_expire_days: int = 7
 
-    # Rate Limiting
     rate_limit_chat: int = 30
     rate_limit_upload: int = 10
     rate_limit_default: int = 200
 
-    # ------------------------------------------------------------------
     # Governance (NIST AI RMF: Govern / Map / Measure / Manage)
     #
     # These are the machine-readable form of docs/governance/*. They are
     # read by src/governance/policy.py into a frozen AIPolicy that the
     # request path, the evaluation runner, and the CI gate all share, so a
     # threshold is defined in exactly one place.
-    # ------------------------------------------------------------------
 
-    # GOVERN
     governance_policy_version: str = "1.0.0"
     # "enforce" blocks violations; "monitor" counts and logs them but lets
     # the request through. Roll new controls out in monitor mode first.
@@ -283,19 +286,20 @@ class Settings(BaseSettings):
     # Comma-separated detector names to run; empty means all registered.
     governance_pii_detectors: str = ""
 
-    # ------------------------------------------------------------------
     # Feature flags (see src/governance/feature_flags.py)
     #
     # Per-environment defaults. An operator override stored in the database
     # wins over these at runtime; this is the baseline a fresh deployment
     # starts from.
-    # ------------------------------------------------------------------
     feature_enable_query_router: bool = True
     feature_enable_web_search: bool = False
     feature_enable_sql_tool: bool = False
     feature_enable_calculator: bool = True
     feature_enable_reranker: bool = True
     feature_enable_guardrails: bool = True
+    # Vision is a fallback, so it ships on but escalates rarely -- see
+    # src/retrieval/vision/escalation.py for the conditions.
+    feature_enable_vision_fallback: bool = True
     feature_enable_online_eval: bool = True
     feature_enable_semantic_cache: bool = True
     feature_enable_llm_fallback: bool = True
@@ -303,18 +307,14 @@ class Settings(BaseSettings):
     feature_retrieval_enabled: bool = True
     feature_ingestion_enabled: bool = True
 
-    # ------------------------------------------------------------------
     # AI Gateway (src/llm/gateway.py)
-    # ------------------------------------------------------------------
     # Ordered fallback chain per role. The gateway tries each in turn on a
     # provider error, so a single vendor outage degrades rather than fails.
     llm_fallback_providers: str = "openai"
     llm_max_retries: int = 2
     llm_timeout_seconds: float = 60.0
 
-    # ------------------------------------------------------------------
     # Query Router (src/routing/)
-    # ------------------------------------------------------------------
     # Below this confidence the router falls back to full RAG rather than
     # guessing: answering from the wrong source is worse than a needless
     # retrieval.
@@ -322,9 +322,7 @@ class Settings(BaseSettings):
     # Skip the classifier LLM call entirely when a deterministic rule matches.
     router_rules_only: bool = False
 
-    # ------------------------------------------------------------------
     # Tools (src/tools/)
-    # ------------------------------------------------------------------
     web_search_provider: str = "tavily"  # tavily | serper | none
     tavily_api_key: str = ""
     serper_api_key: str = ""
@@ -333,13 +331,11 @@ class Settings(BaseSettings):
     sql_tool_allowed_tables: str = ""
     sql_tool_max_rows: int = 100
 
-    # ------------------------------------------------------------------
     # Firebase Authentication (src/auth/)
     #
     # The service account JSON must never be committed. Point this at a path
     # outside version control (config/ is git-ignored) or supply the three
     # discrete credential fields via the environment / a secret manager.
-    # ------------------------------------------------------------------
     firebase_enabled: bool = False
     firebase_service_account: str = "config/firebase-service-account.json"
     # Browser-facing Web API key, used by the Streamlit UI to sign users in
@@ -369,15 +365,10 @@ class Settings(BaseSettings):
     otel_exporter_otlp_endpoint: str = "http://localhost:4317"
     otel_service_name: str = "prod-rag-api"
 
-    # LangSmith -- evaluation only.
-    #
-    # Runtime tracing stays on Langfuse (self-hostable). LangSmith traces
-    # carry prompt text and retrieved document content, which for this system
-    # means the client's structural drawings; sending those to a third-party
-    # SaaS is a decision the deployer makes explicitly, not a default. So
-    # `langsmith_tracing` defaults to False and is the only thing that sets
-    # LANGCHAIN_TRACING_V2. Datasets and evaluators (see src/evaluation/)
-    # work independently of it.
+    # LangSmith -- evaluation only. Runtime tracing stays on Langfuse
+    # (self-hostable). LangSmith traces carry prompt text and retrieved content,
+    # which here means the client's drawings; sending those to a third party is
+    # the deployer's explicit decision, so this defaults to False.
     langsmith_api_key: str = ""
     langsmith_endpoint: str = "https://api.smith.langchain.com"
     langsmith_project: str = "steel-doc-intelligence"

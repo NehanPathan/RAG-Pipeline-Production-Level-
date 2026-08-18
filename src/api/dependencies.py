@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from src.application.use_cases.register_revision import RegisterRevision
 from src.config import get_settings
@@ -397,6 +398,7 @@ def _build_query_pipeline() -> QueryPipeline:
         # General-knowledge answers use the large model: they carry no
         # retrieved context, so the model's own quality is all there is.
         direct_llm=large_llm,
+        vision_fallback=_build_vision_fallback(settings, policy),
     )
 
 
@@ -606,3 +608,126 @@ def _build_ingestion_pipeline() -> IngestionPipeline:
         register_revision=(get_register_revision() if entity_extractor is not None else None),
         drawing_repo=get_drawing_repository(),
     )
+
+
+def _build_vision_fallback(settings: Any, policy: Any) -> object | None:
+    """Assemble the vision fallback, or None when it cannot run.
+
+    Returning None rather than a half-wired object is deliberate: a fallback
+    that exists but cannot render or cannot see would fail per-question, at
+    answer time, once per query. Deciding once at construction means a
+    deployment without a vision-capable provider simply behaves
+    deterministically, which is the correct behaviour and not a degraded one.
+    """
+    from src.domain.value_objects.sensitivity import Sensitivity
+    from src.llm.registry import build_gateway
+    from src.monitoring.logger import get_logger
+    from src.retrieval.vision.fallback import VisionFallback
+    from src.retrieval.vision.service import VisionFallbackService
+
+    log = get_logger(__name__)
+
+    provider = build_gateway(settings, role=settings.vision_llm_role)  # type: ignore[arg-type]
+    if not provider.supports_vision:
+        log.info("vision_fallback_unavailable", model=provider.model_id)
+        return None
+
+    return VisionFallbackService(
+        VisionFallback(
+            provider=provider,
+            policy=policy,
+            source=_PostgresDocumentSource(),
+            cache=_VisionCache(),
+            max_sensitivity=Sensitivity.parse(
+                settings.vision_max_sensitivity, Sensitivity.INTERNAL
+            ),
+            max_pixels=settings.vision_max_image_pixels,
+            timeout_seconds=settings.vision_timeout_seconds,
+            min_confidence=settings.vision_min_observation_confidence,
+            cache_ttl_seconds=settings.vision_cache_ttl_seconds,
+        ),
+        enabled=settings.feature_enable_vision_fallback,
+        max_regions=settings.vision_max_regions,
+        max_calls=settings.vision_max_calls_per_query,
+    )
+
+
+class _PostgresDocumentSource:
+    """Finds the file behind a chunk, with its classification and revision."""
+
+    async def locate(self, document_id: str) -> tuple[Path | None, str, object, str]:
+        import uuid as _uuid
+
+        from src.domain.value_objects.sensitivity import Sensitivity
+
+        try:
+            document = await get_document_repository().get_by_id(_uuid.UUID(document_id))
+        except (ValueError, TypeError):
+            return (None, "", Sensitivity.RESTRICTED, "")
+        if document is None:
+            return (None, "", Sensitivity.RESTRICTED, "")
+
+        # `file_path` is a blob key, not a filesystem path -- the API is a
+        # different process from the worker that ingested the file, so there
+        # is no local copy to open. Materialised the same way the job runner
+        # does it, and cached on disk so a second question about the same
+        # drawing does not re-download it.
+        path = await self._materialise(document)
+        # The revision label is part of the cache key, so an unlabelled
+        # document still needs something stable: its own updated timestamp
+        # changes when it is reprocessed, which is exactly when a cached
+        # observation should stop being served.
+        revision = document.revision_label or document.updated_at.isoformat()
+        return (path, document.file_type or "", document.sensitivity, revision)
+
+    @staticmethod
+    async def _materialise(document: Any) -> Path | None:
+        """A local copy of the drawing, or None if it cannot be obtained.
+
+        None rather than an exception: an unreachable source should cost the
+        vision fallback, never the answer.
+        """
+        if not document.file_path:
+            return None
+
+        local = Path(document.file_path)
+        if local.exists():
+            return local
+
+        work_dir = Path(get_settings().derived_assets_dir) / "vision"
+        target = work_dir / f"{document.id}_{document.file_name}"
+        if target.exists():
+            return target
+
+        try:
+            blobs = get_blob_store(get_settings())
+            work_dir.mkdir(parents=True, exist_ok=True)
+            with target.open("wb") as handle:
+                async for chunk in blobs.get_stream(document.file_path):
+                    handle.write(chunk)
+        except Exception:  # pragma: no cover - blob outage must not raise here
+            return None
+        return target
+
+
+class _VisionCache:
+    """Observation cache on the existing Redis client.
+
+    Every failure is swallowed: a cache that cannot be reached should cost a
+    repeated vision call, never an answer.
+    """
+
+    def __init__(self) -> None:
+        self._cache = RedisCache(get_redis_client())
+
+    async def get(self, key: str) -> object | None:
+        try:
+            return await self._cache.get(key)
+        except Exception:  # pragma: no cover - cache must never break an answer
+            return None
+
+    async def set(self, key: str, value: object, ttl: int) -> None:
+        try:
+            await self._cache.set(key, value, ttl)
+        except Exception:  # pragma: no cover
+            return

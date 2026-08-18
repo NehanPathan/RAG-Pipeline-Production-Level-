@@ -373,6 +373,21 @@ export const mockApi: ApiSurface = {
     return delay(doc, 400)
   },
 
+  async releaseDocument(id, reason) {
+    const doc = DOCUMENTS.find((d) => d.id === id)
+    if (!doc) throw new ApiError(404, "Document not found")
+    if (doc.status !== "quarantined") {
+      throw new ApiError(409, `Document is ${doc.status}, not quarantined.`)
+    }
+    doc.status = "pending"
+    return delay({
+      document_id: id,
+      job_id: crypto.randomUUID(),
+      status: "queued",
+      message: `Released${reason ? `: ${reason}` : ""}. It is screened again on re-ingestion.`,
+    })
+  },
+
   async reprocessDocument(id) {
     const doc = DOCUMENT_BY_ID.get(id)
     if (!doc || !readable(doc)) notFound()
@@ -648,6 +663,25 @@ export const mockApi: ApiSurface = {
     return delay(messages)
   },
 
+  async deleteConversation(id) {
+    const index = CONVERSATIONS.findIndex((c) => c.id === id)
+    // 404 rather than 403 when it is not the caller's, matching the route.
+    if (index < 0) notFound("Conversation not found")
+    // Mirrors the server's soft delete: the entry leaves the history, and
+    // `messagesFor` still resolves it, standing in for the message rows that
+    // the feedback and evaluation samples continue to reference.
+    CONVERSATIONS.splice(index, 1)
+    return delay(
+      {
+        conversation_id: id,
+        archived: true,
+        message:
+          "Removed from your history. The messages are retained so the ratings and evaluation samples attached to them stay intact.",
+      },
+      280,
+    )
+  },
+
   async inspectRetrieval(query) {
     const docs = visibleDocuments().filter((d) => d.status === "indexed")
     const allChunks = docs.flatMap((d) => chunksFor(d.id).slice(0, 3))
@@ -783,12 +817,17 @@ export const mockApi: ApiSurface = {
     const window = FEEDBACK.filter((f) => new Date(f.created_at).getTime() >= cutoff)
     const byTag: Record<string, number> = {}
     for (const entry of window) for (const tag of entry.tags) byTag[tag] = (byTag[tag] ?? 0) + 1
-    const positive = window.filter((f) => f.rating >= 3).length
+    // The server counts a rating of 2 or less as negative; anything above is
+    // not automatically "positive", so these are counted separately rather
+    // than derived from each other.
+    const negative = window.filter((f) => f.rating <= 2).length
+    const positive = window.filter((f) => f.rating >= 4).length
     return delay({
       window_hours: windowHours,
       total: window.length,
       positive,
-      negative: window.length - positive,
+      negative,
+      negative_rate: window.length ? Number((negative / window.length).toFixed(3)) : 0,
       average_rating: window.length
         ? Number((window.reduce((s, f) => s + f.rating, 0) / window.length).toFixed(2))
         : null,

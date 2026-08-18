@@ -47,6 +47,13 @@ INDEX_MAPPINGS: dict[str, Any] = {
             "drawing_number": {"type": "keyword"},
             "revision_label": {"type": "keyword"},
             "is_latest": {"type": "boolean"},
+            # Stored and returned, never indexed. Nothing queries a
+            # highlight rectangle, and `enabled: false` is what stops
+            # Elasticsearch creating six float subfields for every region on
+            # every chunk -- a mapping explosion that buys nothing.
+            "regions": {"type": "object", "enabled": False},
+            "region_precision": {"type": "keyword"},
+            "layers": {"type": "keyword"},
         }
     },
     "settings": {
@@ -233,7 +240,9 @@ class ElasticsearchSearchRepository(SearchRepository):
             deleted = response.get("deleted", 0)
         except Exception as exc:
             # Index may not exist if the document failed before search indexing
-            logger.warning("elasticsearch_delete_skipped", document_id=str(document_id), error=str(exc))
+            logger.warning(
+                "elasticsearch_delete_skipped", document_id=str(document_id), error=str(exc)
+            )
             return 0
         logger.info("elasticsearch_deleted", document_id=str(document_id), count=deleted)
         return deleted
@@ -253,9 +262,7 @@ class ElasticsearchSearchRepository(SearchRepository):
             if filters.user_id:
                 reachable.append({"term": {"user_id": str(filters.user_id)}})
             if filters.project_ids:
-                reachable.append(
-                    {"terms": {"project_id": [str(p) for p in filters.project_ids]}}
-                )
+                reachable.append({"terms": {"project_id": [str(p) for p in filters.project_ids]}})
             clauses.append({"bool": {"should": reachable, "minimum_should_match": 1}})
 
         if filters.latest_only:
@@ -287,6 +294,8 @@ class ElasticsearchSearchRepository(SearchRepository):
             clauses.append({"terms": {"drawing_number": filters.drawing_numbers}})
         if filters.content_kinds:
             clauses.append({"terms": {"content_kind": filters.content_kinds}})
+        if filters.layers:
+            clauses.append({"terms": {"layers": filters.layers}})
         if filters.sensitivity_in is not None:
             # Mirrors the Qdrant filter: documents indexed before the field
             # existed have no `sensitivity` and must not vanish from results

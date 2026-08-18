@@ -30,6 +30,7 @@ from src.monitoring.prometheus_metrics import (
 )
 from src.retrieval.graph.state import QueryState
 from src.routing.routes import Route, RouteDecision, RouteSource
+from src.routing.rules import smalltalk_reply
 
 logger = get_logger(__name__)
 
@@ -138,9 +139,16 @@ class QueryNodes:
 
         if route is Route.REFUSE:
             answers_total.labels(outcome="refused").inc()
+            # The router supplies the wording when it has a specific reason --
+            # a safety refusal should say what it declined rather than claim
+            # the question was empty, which is the only case the fallback
+            # covers. Zero model calls and zero retrieval either way.
             writer(
                 self._p._done(
-                    "I need an actual question to answer.", decision, trace_id, refused=True
+                    decision.args.get("reply") or "I need an actual question to answer.",
+                    decision,
+                    trace_id,
+                    refused=True,
                 )
             )
             return {"finished": True}
@@ -148,11 +156,18 @@ class QueryNodes:
         if route is Route.GREETING:
             # Zero model calls, zero retrieval. The cheapest possible answer
             # to the most common non-question in real traffic.
+            #
+            # The reply is re-derived from the query rather than defaulted,
+            # because only the *rules* attach wording to their decisions. The
+            # classifier files greetings, thanks and "what can you do" under
+            # this one route and supplies none, so a bare `"Hello."` default
+            # answered every capability question with a greeting.
             answers_total.labels(outcome="served").inc()
             query_latency.labels(intent="greeting", provider="none").observe(
                 time.perf_counter() - started
             )
-            writer(self._p._done(str(decision.args.get("reply") or "Hello."), decision, trace_id))
+            reply = str(decision.args.get("reply") or "") or smalltalk_reply(state["query"])
+            writer(self._p._done(reply, decision, trace_id))
             return {"finished": True}
 
         if route is Route.LLM_KNOWLEDGE:
@@ -286,6 +301,40 @@ class QueryNodes:
 
         return {"compressed_chunks": compressed_chunks, "citations": citations}
 
+    # -- Vision fallback: only where deterministic reading fell short -----
+
+    async def vision_fallback(self, state: QueryState) -> dict[str, Any]:
+        """Consider a picture, and usually decline.
+
+        Sits between context assembly and generation because that is the only
+        point where the question "do we have enough evidence?" can actually be
+        answered -- after retrieval has produced what the file says, and
+        before an answer is written from it.
+
+        Never replaces the deterministic context. When it runs, the
+        observation is *appended* as one more passage, explicitly labelled as
+        weaker than anything the file states, and generation proceeds
+        normally under the same grounding guard.
+        """
+        fallback = self._p._vision_fallback
+        compressed_chunks = state.get("compressed_chunks") or []
+        if fallback is None:
+            return {"vision": None}
+
+        outcome = await fallback.consider(
+            query=state["inspection"].processed_query.rewritten_query,
+            chunks=compressed_chunks,
+            trace_id=state.get("trace_id", ""),
+            principal=state.get("principal"),
+        )
+        if not outcome.used:
+            return {"vision": outcome}
+
+        return {
+            "vision": outcome,
+            "compressed_chunks": [*compressed_chunks, *fallback.as_chunks(outcome)],
+        }
+
     # -- Module G: generation and post-generation grounding check ---------
 
     async def generate(self, state: QueryState) -> dict[str, Any]:
@@ -370,19 +419,14 @@ class QueryNodes:
             if state["flags"].semantic_cache_enabled:
                 # Cached under the *resolved* query, not the raw one.
                 #
-                # The cache is keyed on query similarity and has no notion of
-                # a conversation, so a follow-up cached under its own words
-                # is served to every other conversation that phrases one the
-                # same way. "What about the bolts?" asked about one drawing
-                # came back verbatim for a different drawing in a different
-                # conversation -- the answer confident, cited, and about the
-                # wrong sheet.
+                # The cache is keyed on query similarity and knows nothing about
+                # conversations, so "what about the bolts?" cached under its own words came
+                # back verbatim for a different drawing in a different conversation --
+                # confident, cited, and about the wrong sheet.
                 #
-                # Storing the resolved form fixes it without a second cache
-                # key: an elliptical question resolves to something naming
-                # its own subject, which no other conversation's raw text
-                # matches, while a self-contained question resolves to
-                # roughly itself and still caches normally.
+                # The resolved form fixes it without a second key: an elliptical question
+                # resolves to something naming its own subject, which no other conversation's
+                # raw text matches.
                 await self._p._semantic_cache.store(
                     inspection.processed_query.rewritten_query or state["query"],
                     answer_text,

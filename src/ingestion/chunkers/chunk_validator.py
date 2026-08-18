@@ -78,21 +78,14 @@ class ChunkValidator:
 
         # Deduplication is scoped *per chunk type*, not across all chunks.
         #
-        # Parent/child splitting produces children whose text is a substring of
-        # their parent -- and when a section is short enough to fit one child
-        # window, the child's text is byte-identical to the parent's. A single
-        # shared hash set therefore saw the parent first and rejected its only
-        # child as a "duplicate".
+        # Parent/child splitting makes children whose text is a substring of the
+        # parent, and for a short section byte-identical to it -- so one shared hash
+        # set saw the parent first and rejected its only child as a duplicate.
         #
-        # That was silently fatal: parents are never embedded (see
-        # IngestionPipeline, which embeds only child/table/standalone chunks),
-        # so any document short enough to fit one child window ended up with
-        # zero vectors and was invisible to semantic search. Keyword search
-        # still found the parent, which is why the document looked indexed.
-        # Found by an end-to-end test on a 184-character policy document.
-        #
-        # A child duplicating another *child* is still a genuine duplicate and
-        # is still rejected.
+        # Silently fatal: parents are never embedded, so any document short enough to
+        # fit one child window ended up with zero vectors and was invisible to
+        # semantic search, while keyword search still found the parent and made it
+        # look indexed. A child duplicating another child is still rejected.
         seen_by_type: dict[str, set[str]] = {}
 
         for chunk in chunks:

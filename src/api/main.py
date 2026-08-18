@@ -160,17 +160,11 @@ async def lifespan(app: FastAPI):
         await ensure_search_schema()
         logger.info("search_schema_ensured")
 
-        # Warm up the ingestion pipeline (and its embedding models) here,
-        # not lazily on the first document upload. `get_ingestion_pipeline()`
-        # constructs the chunking-role embedding provider synchronously
-        # (SentenceTransformer(...) -- a multi-hundred-MB-to-multi-GB cold
-        # download+load for the default bge-m3 model), and it was previously
-        # being built as an eager argument to `background_tasks.add_task()`
-        # inside the upload route -- meaning the first upload after any
-        # container start blocked the entire event loop (all requests, not
-        # just that upload) for as long as the model took to download. Found
-        # during Phase 4A end-to-end verification. Run via `to_thread` so
-        # even this blocking call doesn't tie up the startup event loop.
+        # Warm the ingestion pipeline here, not lazily on first upload:
+        # `get_ingestion_pipeline()` loads the chunking embedder synchronously
+        # (bge-m3, hundreds of MB), and building it inside the upload route blocked
+        # the whole event loop -- every request, not just that upload -- on the
+        # first upload after any container start. `to_thread` keeps startup free too.
         pipeline = await asyncio.to_thread(get_ingestion_pipeline)
         logger.info("ingestion_pipeline_warmed")
         _warn_on_unreachable_loaders(pipeline, settings)

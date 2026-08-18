@@ -18,6 +18,7 @@ from src.ingestion.extractors.drawing_identity import CUSTOM_METADATA_KEY, Drawi
 from src.ingestion.loaders.base import DocumentLoader
 from src.ingestion.parsing.parsed_document import ParsedDocument
 from src.ingestion.parsing.parsing_orchestrator import DocumentParsingService
+from src.ingestion.screening import screen_document
 from src.monitoring.logger import get_logger
 
 logger = get_logger(__name__)
@@ -92,20 +93,33 @@ class IngestionPipeline:
         # than derived.
         self._drawing_repo = drawing_repo
 
+    def _screening_entity_count(self, text: str) -> int:
+        """How many steel designations the deterministic extractor finds.
+
+        Reuses the extractor the pipeline already carries rather than adding a
+        second one, and degrades to zero when none is configured -- screening
+        then rests on vocabulary alone, which is weaker but never wrong in the
+        direction of quarantining a real drawing.
+        """
+        extractor = getattr(self, "_entity_extractor", None)
+        if extractor is None or not hasattr(extractor, "extract_sync"):
+            return 0
+        try:
+            return len(extractor.extract_sync(text[:20_000]).entities)
+        except Exception:  # pragma: no cover - screening must not break ingestion
+            return 0
+
     async def ingest(self, document: Document, file_path: Path) -> IngestionResult:
         logger.info("ingestion_start", document_id=str(document.id), file=document.file_name)
 
-        # Mark as processing
         document.mark_processing()
         await self._document_repo.update(document)
 
         try:
-            # Step 1: Select loader and load document
             loader = self._select_loader(document.file_type, file_path.suffix)
             raw_document = await loader.load(file_path)
             document.loader_used = loader.name
 
-            # Step 1b-1d: OCR detection -> OCR (only if required) -> layout
             # analysis, unified into one ParsedDocument (Parts 1-3)
             parsed_document = await self._parsing_service.process(
                 raw_document, file_path, document.file_type
@@ -113,13 +127,38 @@ class IngestionPipeline:
             document.page_count = parsed_document.raw.page_count
             document.word_count = parsed_document.raw.word_count
 
-            # Step 2: LLM metadata enrichment (OCR-augmented text when applicable)
+            #
+            # Placed here on purpose: after parsing, so there is text and a
+            # content kind to judge on, and *before* enrichment, chunking and
+            # embedding, so a file that does not belong costs one regex pass
+            # rather than an LLM call and a few hundred embeddings.
+            verdict = screen_document(
+                parsed_document.full_text,
+                content_kind=getattr(parsed_document.content_kind, "value", None),
+                entity_count=self._screening_entity_count(parsed_document.full_text),
+            )
+            if verdict.quarantined:
+                document.mark_quarantined(verdict.reason)
+                await self._document_repo.update(document)
+                logger.warning(
+                    "document_quarantined",
+                    document_id=str(document.id),
+                    file=document.file_name,
+                    category=verdict.category,
+                    relevance=verdict.relevance,
+                )
+                return IngestionResult(
+                    document_id=document.id,
+                    status=DocumentStatus.QUARANTINED,
+                    chunks_created=0,
+                    error=verdict.reason,
+                )
+
             document.metadata = await self._enricher.enrich(
                 content=parsed_document.full_text,
                 file_name=document.file_name,
             )
 
-            # Step 2b: Attach this document to its drawing as a revision.
             #
             # Before the chunk loop below, because that loop denormalizes
             # `drawing_id`, `revision_label` and `is_latest` onto every
@@ -128,7 +167,6 @@ class IngestionPipeline:
             # superseded revision's were correctly updated.
             drawing_number = await self._register_drawing_revision(document)
 
-            # Step 3: Chunking -- HybridChunkingPipeline in production,
             # ParentChildOnlyStrategy for the Part 8 A/B benchmark (Gap 5)
             chunks = await self._chunking_strategy.chunk(document.id, parsed_document)
 
@@ -154,7 +192,6 @@ class IngestionPipeline:
                 chunk.revision_label = document.revision_label
                 chunk.is_latest = document.is_latest
 
-            # Step 4: Generate embeddings in batch (retrieval-role provider)
             retrieval_provider = self._embedding_strategy.retrieval_provider
             child_chunks = [
                 c for c in chunks if c.chunk_type.value in ("child", "table", "standalone")
@@ -165,21 +202,16 @@ class IngestionPipeline:
                 chunk.embedding = embedding
                 chunk.embedding_model = retrieval_provider.model_id
 
-            # Step 5: Ensure collection exists
             await self._vector_repo.create_collection_if_not_exists(retrieval_provider.dimensions)
             await self._search_repo.create_index_if_not_exists()
 
-            # Step 6: Store chunks in Postgres
             saved_chunks = await self._chunk_repo.save_batch(chunks)
 
-            # Step 7: Upsert vectors to Qdrant (only chunks with embeddings)
             chunks_with_embeddings = [c for c in saved_chunks if c.has_embedding()]
             await self._vector_repo.upsert_batch(chunks_with_embeddings)
 
-            # Step 8: Index in Elasticsearch for BM25
             await self._search_repo.index_batch(saved_chunks)
 
-            # Step 9: Persist document-level OCR/layout/embedding summary
             # (Part 7's Document Intelligence UI reads this) -- optional so
             # IngestionPipeline has no hard dependency on Module 9 being wired.
             if self._intelligence_recorder is not None:
@@ -191,7 +223,6 @@ class IngestionPipeline:
                     retrieval_model_id=retrieval_provider.model_id,
                 )
 
-            # Mark as indexed
             document.mark_indexed()
             await self._document_repo.update(document)
 

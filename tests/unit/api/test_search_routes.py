@@ -272,7 +272,6 @@ class TestFacets:
         assert search_repo.last_filters.sensitivity_in
 
 
-# --- Conversation history is bounded and scoped -----------------------------
 
 
 class TestConversationHistory:

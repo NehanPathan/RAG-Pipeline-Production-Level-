@@ -6,10 +6,38 @@ from dataclasses import dataclass
 import tiktoken
 
 from src.domain.entities.document import ChunkMetadata, ChunkType, DocumentChunk
+from src.domain.value_objects.provenance import (
+    PRECISION_PAGE,
+    PRECISION_SECTION,
+    Region,
+)
 from src.ingestion.loaders.base import RawDocument
 from src.monitoring.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+def _precision_for(
+    chunk_text: str, whole_text: str, regions: list[Region], stated: str | None
+) -> str | None:
+    """What to claim about a window's regions.
+
+    A segment's rectangles bound the whole segment. If the token split
+    returned that segment intact -- which is the common case for a CAD
+    callout, a title block or any short section -- they still bound this
+    chunk exactly, and reporting `section` would understate what is known and
+    leave the viewer drawing a soft box around text we can locate precisely.
+
+    Once the segment is cut, they do not: the rectangles bound text this
+    chunk no longer contains, and a token offset has no coordinate to
+    recover it from. `section` is the honest label there, and `page` is what
+    is left when there are no rectangles at all.
+    """
+    if not regions:
+        return PRECISION_PAGE if stated is None else stated
+    if chunk_text.strip() == whole_text.strip():
+        return stated or PRECISION_SECTION
+    return PRECISION_SECTION
 
 
 @dataclass
@@ -118,6 +146,9 @@ class ParentChildChunker:
         page_number: int | None = None,
         section_title: str | None = None,
         start_position: int = 0,
+        regions: list[Region] | None = None,
+        region_precision: str | None = None,
+        layers: list[str] | None = None,
     ) -> list[DocumentChunk]:
         """Same parent/child token-window splitting as `chunk()`, scoped to a
         single semantic segment's text instead of the whole document.
@@ -127,11 +158,22 @@ class ParentChildChunker:
         `chunk()` itself is unchanged, and this reuses the same private
         `_split_into_token_chunks` helper it already uses internally (Gap 4,
         docs/architecture/12_phase4a_design_review.md).
+
+        `regions` describe where the *whole segment* sits. Splitting it into
+        token windows does not tell us which window landed on which rectangle
+        -- a token offset has no coordinate -- so every window inherits the
+        segment's regions and the precision is downgraded to say so. Claiming
+        block precision here would put a tight highlight around text the
+        chunk does not contain.
         """
+        inherited = list(regions or [])
+        chunk_layers = list(layers or [])
         chunks: list[DocumentChunk] = []
         position = start_position
 
-        parent_tokens = self._split_into_token_chunks(text, self._config.parent_chunk_size, self._config.overlap)
+        parent_tokens = self._split_into_token_chunks(
+            text, self._config.parent_chunk_size, self._config.overlap
+        )
         for parent_text, _ in parent_tokens:
             if not parent_text.strip():
                 continue
@@ -141,7 +183,13 @@ class ParentChildChunker:
                 position=position,
                 chunk_type=ChunkType.PARENT,
                 token_count=len(self._encoder.encode(parent_text)),
-                chunk_metadata=ChunkMetadata(page_number=page_number, section_title=section_title),
+                chunk_metadata=ChunkMetadata(
+                    page_number=page_number,
+                    section_title=section_title,
+                    regions=list(inherited),
+                    region_precision=_precision_for(parent_text, text, inherited, region_precision),
+                    layers=list(chunk_layers),
+                ),
             )
             chunks.append(parent_chunk)
             position += 1
@@ -159,7 +207,15 @@ class ParentChildChunker:
                     chunk_type=ChunkType.CHILD,
                     parent_chunk_id=parent_chunk.id,
                     token_count=len(self._encoder.encode(child_text)),
-                    chunk_metadata=ChunkMetadata(page_number=page_number, section_title=section_title),
+                    chunk_metadata=ChunkMetadata(
+                        page_number=page_number,
+                        section_title=section_title,
+                        regions=list(inherited),
+                        region_precision=_precision_for(
+                            child_text, text, inherited, region_precision
+                        ),
+                        layers=list(chunk_layers),
+                    ),
                 )
                 chunks.append(child_chunk)
                 position += 1

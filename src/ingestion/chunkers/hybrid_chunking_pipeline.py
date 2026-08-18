@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 
 from src.domain.entities.document import ChunkMetadata, ChunkType, DocumentChunk
+from src.domain.value_objects.provenance import PRECISION_BLOCK
 from src.ingestion.chunkers.chunk_validator import ChunkValidator
 from src.ingestion.chunkers.parent_child_chunker import ParentChildChunker
 from src.ingestion.chunkers.semantic_chunker import SemanticChunker, SemanticSegment
@@ -55,7 +56,9 @@ class HybridChunkingPipeline:
         # text they were found in -- which is the chunk, not the document.
         self._entity_extractor = entity_extractor
 
-    async def chunk(self, document_id: uuid.UUID, parsed_document: ParsedDocument) -> list[DocumentChunk]:
+    async def chunk(
+        self, document_id: uuid.UUID, parsed_document: ParsedDocument
+    ) -> list[DocumentChunk]:
         sections = self._structure_chunker.split(parsed_document)
         segments = await self._semantic_chunker.split(sections)
 
@@ -73,6 +76,14 @@ class HybridChunkingPipeline:
                 page_number=segment.page_number,
                 section_title=segment.section_title,
                 start_position=position,
+                regions=segment.regions,
+                # A segment that was never split still sits exactly where its
+                # blocks did, so its rectangles are block-precise. One that
+                # was split by sentence does not, and `chunk_section`
+                # downgrades it -- this only offers the stronger claim where
+                # it holds.
+                region_precision=PRECISION_BLOCK if segment.regions else None,
+                layers=segment.layers,
             )
             for chunk in section_chunks:
                 chunk.chunk_metadata.heading_level = segment.heading_level
@@ -159,7 +170,9 @@ class HybridChunkingPipeline:
         # its default.
         return parsed_document.raw.loader_name in _DRAWING_LOADERS
 
-    def _table_chunk(self, document_id: uuid.UUID, segment: SemanticSegment, position: int) -> DocumentChunk:
+    def _table_chunk(
+        self, document_id: uuid.UUID, segment: SemanticSegment, position: int
+    ) -> DocumentChunk:
         content = f"Table:\n{segment.text}"
         return DocumentChunk(
             document_id=document_id,
@@ -173,5 +186,8 @@ class HybridChunkingPipeline:
                 heading_level=segment.heading_level,
                 contains_table=True,
                 ocr_confidence=segment.ocr_confidence,
+                regions=list(segment.regions),
+                region_precision=PRECISION_BLOCK if segment.regions else None,
+                layers=list(segment.layers),
             ),
         )

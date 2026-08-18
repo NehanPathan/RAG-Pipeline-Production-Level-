@@ -43,6 +43,11 @@ FACETABLE_FIELDS = (
     # Provenance quality -- "cad_native" vs "scanned_drawing" is the
     # difference between an exact dimension and an OCR reading of one.
     "content_kind",
+    # On a structural drawing the layer is the semantics: S-BOLTS,
+    # S-SECT_STEEL, S-DIMS. Faceting on it turns "what is on the bolts layer"
+    # into a filter rather than a question about meaning -- and a drawing
+    # question is structural far more often than it is semantic.
+    "layers",
 )
 
 
@@ -66,6 +71,8 @@ class SearchRequest(BaseModel):
     # "cad_native" | "vector_drawing" | "scanned_drawing" | "scanned_prose" |
     # "prose". Narrows to a provenance class -- see ContentKind.
     content_kinds: list[str] = Field(default_factory=list)
+    # CAD layer names, matched exactly against the indexed keyword list.
+    layers: list[str] = Field(default_factory=list)
     # Superseded revisions are excluded unless asked for: answering from an
     # old sheet is worse than not answering.
     include_superseded: bool = False
@@ -83,6 +90,7 @@ class SearchHit(BaseModel):
     project_number: str | None
     entity_canonicals: list[str]
     content_kind: str | None
+    layers: list[str]
     content: str
     score: float
 
@@ -169,6 +177,8 @@ async def structured_search(
         filters.drawing_numbers = body.drawing_numbers
     if body.content_kinds:
         filters.content_kinds = body.content_kinds
+    if body.layers:
+        filters.layers = body.layers
 
     results = await get_search_repository().search(
         body.query or "*", top_k=body.top_k, filters=filters
@@ -193,6 +203,7 @@ async def structured_search(
                     }
                 ),
                 content_kind=r.chunk.chunk_metadata.content_kind,
+                layers=list(r.chunk.chunk_metadata.layers),
                 content=r.chunk.content,
                 score=r.bm25_score,
             )
