@@ -124,14 +124,10 @@ BUILTIN_DETECTORS: tuple[Detector, ...] = (
     ),
     Detector(
         name="phone",
-        # Requires a separator or a leading +, so bare digit runs (invoice
-        # numbers, years, quantities) are not swept up.
-        #
-        # The trailing guard is `(?!\d)(?!\.\d)` rather than `(?![\w.])`. The
-        # latter refused to match any number followed by a period -- which is
-        # every phone number at the end of a sentence ("call 555-123-4567.").
-        # These two lookaheads keep the original intent (don't run into a
-        # decimal or an IP octet like `.100`) without that false negative.
+        # Requires a separator or leading +, so bare digit runs (invoice numbers,
+        # years) are not swept up. The trailing guard is `(?!\d)(?!\.\d)`, not
+        # `(?![\w.])` -- the latter refused every phone number ending a sentence
+        # ("call 555-123-4567.") while still needing to exclude `.100` octets.
         pattern=re.compile(
             r"(?<![\w.])(?:\+\d{1,3}[\s.-]?)?(?:\(\d{2,4}\)[\s.-]?|\d{2,4}[\s.-])"
             r"\d{2,4}[\s.-]?\d{2,4}(?:[\s.-]?\d{2,4})?(?!\d)(?!\.\d)"

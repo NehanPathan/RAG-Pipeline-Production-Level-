@@ -39,7 +39,6 @@ class FlagSpec:
 # call site should raise, not silently read as False and disable a feature
 # nobody realises is off.
 FLAGS: tuple[FlagSpec, ...] = (
-    # --- Capabilities -------------------------------------------------
     FlagSpec(
         "enable_query_router",
         True,
@@ -97,7 +96,15 @@ FLAGS: tuple[FlagSpec, ...] = (
         "Let the AI gateway fail over to a secondary provider when the "
         "primary errors. Disable to make provider outages loud instead of silent.",
     ),
-    # --- Kill switches ------------------------------------------------
+    FlagSpec(
+        "enable_vision_fallback",
+        True,
+        FlagScope.CAPABILITY,
+        "Let a genuinely visual question escalate one crop of a drawing to a "
+        "vision model, after deterministic CAD reading has reported a gap. "
+        "Disable to keep every answer text-only; deterministic behaviour is "
+        "unaffected either way.",
+    ),
     FlagSpec(
         "answering_enabled",
         True,
@@ -129,9 +136,7 @@ _env_defaults: dict[str, bool] | None = None
 
 class UnknownFlagError(KeyError):
     def __init__(self, name: str) -> None:
-        super().__init__(
-            f"Unknown feature flag {name!r}. Known flags: {sorted(FLAGS_BY_NAME)}"
-        )
+        super().__init__(f"Unknown feature flag {name!r}. Known flags: {sorted(FLAGS_BY_NAME)}")
         self.name = name
 
 

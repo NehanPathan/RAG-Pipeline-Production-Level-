@@ -166,16 +166,11 @@ async def _resolve_firebase_principal(request: Request, settings, policy) -> Pri
         ) from exc
 
     if not identity.email_verified and settings.firebase_require_auth:
-        # The claim can be legitimately stale: a Firebase ID token is a
-        # snapshot, so a user who verifies their email after signing in keeps
-        # a token saying `email_verified: false` for up to an hour. Rejecting
-        # on the claim alone strands them behind a 403 that no amount of
-        # re-verifying fixes.
-        #
-        # So on the *unverified* path only, confirm against the live user
-        # record before refusing. The common path (verified claim) still
-        # costs nothing; this round-trip happens only when we are about to
-        # deny someone, which is exactly when being right matters.
+        # The claim can be legitimately stale: a Firebase ID token is a snapshot, so
+        # someone who verifies their email after signing in keeps `email_verified:
+        # false` for up to an hour, stranded behind a 403 that re-verifying cannot
+        # fix. So on the *unverified* path only, check the live record before
+        # refusing -- a round trip paid only when we are about to deny someone.
         if not _live_email_verified(identity.uid):
             access_denied.labels(reason="email_unverified").inc()
             raise HTTPException(

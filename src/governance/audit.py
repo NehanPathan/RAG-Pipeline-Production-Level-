@@ -30,6 +30,14 @@ class AuditAction(str, Enum):
     EVAL_RUN_STARTED = "eval_run_started"
     FEEDBACK_SUBMITTED = "feedback_submitted"
     RETENTION_PURGED = "retention_purged"
+    # A crop of a document was sent to an external vision model. Auditable
+    # because it is document content leaving the deployment, which is
+    # exactly what the classification rules exist to govern.
+    VISION_ESCALATED = "vision_escalated"
+    # A steward released a document the ingestion screen had quarantined.
+    # Auditable because it is a human overriding an automated content
+    # decision, and the only record of who decided the file belonged here.
+    QUARANTINE_RELEASED = "quarantine_released"
 
 
 class AuditOutcome(str, Enum):

@@ -111,7 +111,6 @@ class AIPolicy:
         "beyond its sources."
     )
 
-    # ---------------- GOVERN checks ----------------
 
     def check_llm_provider(self, provider: str) -> PolicyDecision:
         if provider.lower() in self.allowed_llm_providers:
@@ -153,7 +152,6 @@ class AIPolicy:
             )
         return PolicyDecision(True, "C-GOV-04")
 
-    # ---------------- MAP checks ----------------
 
     def clearance_for_role(self, role: str | None) -> Sensitivity:
         """Unknown roles get the configured default, never the maximum."""
@@ -171,7 +169,6 @@ class AIPolicy:
             f"'{sensitivity.value}' or above; principal holds '{clearance.value}'.",
         )
 
-    # ---------------- MEASURE checks ----------------
 
     def quality_floor(self, metric_name: str) -> float | None:
         """The configured floor for an evaluation metric, or None if that
@@ -192,7 +189,6 @@ class AIPolicy:
             f"{metric_name}={value:.3f} is below the policy floor of {floor:.2f}.",
         )
 
-    # ---------------- helpers ----------------
 
     @property
     def enforcing(self) -> bool:
