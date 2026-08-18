@@ -1,4 +1,4 @@
-# RAG, twice
+# RAG
 
 Two production-grade retrieval-augmented generation systems in one repository.
 They are not alternatives — they are the same ideas built twice, deliberately, and
