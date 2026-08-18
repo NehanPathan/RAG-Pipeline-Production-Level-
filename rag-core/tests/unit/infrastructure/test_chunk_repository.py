@@ -2,7 +2,10 @@ import uuid
 from unittest.mock import AsyncMock, MagicMock
 
 from src.domain.entities.document import ChunkMetadata, ChunkType, DocumentChunk
-from src.infrastructure.database.postgres.chunk_repository import PostgresChunkRepository, _to_entity
+from src.infrastructure.database.postgres.chunk_repository import (
+    PostgresChunkRepository,
+    _to_entity,
+)
 from src.infrastructure.database.postgres.models import DocumentChunkModel
 
 

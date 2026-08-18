@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from src.tools.base import Tool, ToolRequest, ToolResult
@@ -26,7 +26,7 @@ class DateTimeTool(Tool):
         try:
             tz = ZoneInfo(tz_name)
         except (ZoneInfoNotFoundError, ValueError):
-            tz, tz_name = timezone.utc, "UTC"
+            tz, tz_name = UTC, "UTC"
 
         now = datetime.now(tz)
         return ToolResult(

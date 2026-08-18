@@ -7,10 +7,10 @@ from dataclasses import dataclass, field
 
 from src.domain.repositories.search_repository import BM25ScoredChunk
 from src.domain.repositories.vector_repository import ScoredChunk
+from src.domain.value_objects.context_bundle import CompressedChunk
 from src.domain.value_objects.processed_query import ProcessedQuery
 from src.domain.value_objects.retrieval_candidate import FusedChunk, RerankedChunk
 from src.domain.value_objects.retrieval_trace import RetrievalTrace
-from src.domain.value_objects.context_bundle import CompressedChunk
 from src.domain.value_objects.sensitivity import Sensitivity
 from src.governance.audit import AuditAction, AuditOutcome
 from src.governance.audit import record as audit_record
@@ -267,7 +267,7 @@ class QueryPipeline:
         flags,
         user_id: uuid.UUID | None = None,
     ) -> AsyncIterator[dict]:
-        """The full retrieval pipeline: Modules A–G under the grounding policy.
+        """The full retrieval pipeline: Modules A-G under the grounding policy.
 
         Extracted from `answer()` so the router can reach it as a fallback
         when a tool it selected turns out to be unavailable — the user should

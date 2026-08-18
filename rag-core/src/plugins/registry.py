@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
-from typing import Any, Generic, TypeVar
+from typing import Any, TypeVar
 
 from src.monitoring.logger import get_logger
 
@@ -30,7 +30,7 @@ class PluginNotFoundError(KeyError):
 
 
 @dataclass(frozen=True)
-class PluginSpec(Generic[T]):
+class PluginSpec[T]:
     """One registered implementation plus the metadata governance needs.
 
     `requires_flag` is what lets a plugin be shipped but switched off: the
@@ -45,7 +45,7 @@ class PluginSpec(Generic[T]):
     tags: tuple[str, ...] = field(default_factory=tuple)
 
 
-class PluginRegistry(Generic[T]):
+class PluginRegistry[T]:
     """A named collection of interchangeable implementations of one interface.
 
     Deliberately not a global singleton: each registry is a module-level

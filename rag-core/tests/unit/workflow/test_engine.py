@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+
 from src.workflow import END, Node, NodeOutcome, Workflow, WorkflowContext, WorkflowError
 
 

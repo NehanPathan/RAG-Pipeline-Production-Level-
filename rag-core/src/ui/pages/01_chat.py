@@ -1,9 +1,10 @@
 import json
 import os
 
+import streamlit as st
+
 from src.ui import http as httpx
 from src.ui.auth import require_auth
-import streamlit as st
 
 st.set_page_config(page_title="Chat", layout="wide")
 
@@ -107,7 +108,7 @@ if not st.session_state.messages:
         "Summarise the key points of the latest policy document",
     ]
     cols = st.columns(len(examples))
-    for col, example in zip(cols, examples):
+    for col, example in zip(cols, examples, strict=False):
         if col.button(example, use_container_width=True, key=f"eg_{example[:12]}"):
             st.session_state._pending_prompt = example
             st.rerun()
@@ -173,52 +174,51 @@ if prompt:
         placeholder.markdown("_Searching documents and thinking..._")
 
         try:
-            with httpx.Client(timeout=120) as client:
-                with client.stream(
-                    "POST",
-                    f"{API_BASE}/api/v1/chat",
-                    json={
-                        "query": prompt,
-                        "conversation_id": st.session_state.conversation_id,
-                        "stream": True,
-                        "debug": debug_mode,
-                    },
-                ) as response:
-                    for line in response.iter_lines():
-                        if not line or not line.startswith("data:"):
-                            continue
-                        data_str = line[5:].strip()
-                        if data_str == "[DONE]":
-                            break
-                        try:
-                            event = json.loads(data_str)
-                        except json.JSONDecodeError:
-                            continue
+            with httpx.Client(timeout=120) as client, client.stream(
+                "POST",
+                f"{API_BASE}/api/v1/chat",
+                json={
+                    "query": prompt,
+                    "conversation_id": st.session_state.conversation_id,
+                    "stream": True,
+                    "debug": debug_mode,
+                },
+            ) as response:
+                for line in response.iter_lines():
+                    if not line or not line.startswith("data:"):
+                        continue
+                    data_str = line[5:].strip()
+                    if data_str == "[DONE]":
+                        break
+                    try:
+                        event = json.loads(data_str)
+                    except json.JSONDecodeError:
+                        continue
 
-                        etype = event.get("type")
-                        if etype == "token":
-                            if not received_first_token:
-                                # First token — clear the thinking indicator
-                                received_first_token = True
-                            full_answer += event.get("content", "")
-                            placeholder.markdown(full_answer + "▌")
-                        elif etype == "done":
-                            full_answer = event.get("answer", full_answer)
-                            citations = event.get("citations", [])
-                            meta = {
-                                "route": event.get("route", "rag"),
-                                "route_source": event.get("route_source", ""),
-                                "grounded": event.get("grounded", True),
-                                "cached": event.get("cached", False),
-                                "refused": event.get("refused", False),
-                                "trace_id": event.get("trace_id", ""),
-                                "latency_ms": event.get("latency_ms"),
-                            }
-                            if event.get("conversation_id"):
-                                st.session_state.conversation_id = event["conversation_id"]
-                        elif etype == "error":
-                            placeholder.error(f"Backend error: {event.get('message', 'unknown')}")
-                            full_answer = f"Error: {event.get('message', 'unknown')}"
+                    etype = event.get("type")
+                    if etype == "token":
+                        if not received_first_token:
+                            # First token — clear the thinking indicator
+                            received_first_token = True
+                        full_answer += event.get("content", "")
+                        placeholder.markdown(full_answer + "▌")
+                    elif etype == "done":
+                        full_answer = event.get("answer", full_answer)
+                        citations = event.get("citations", [])
+                        meta = {
+                            "route": event.get("route", "rag"),
+                            "route_source": event.get("route_source", ""),
+                            "grounded": event.get("grounded", True),
+                            "cached": event.get("cached", False),
+                            "refused": event.get("refused", False),
+                            "trace_id": event.get("trace_id", ""),
+                            "latency_ms": event.get("latency_ms"),
+                        }
+                        if event.get("conversation_id"):
+                            st.session_state.conversation_id = event["conversation_id"]
+                    elif etype == "error":
+                        placeholder.error(f"Backend error: {event.get('message', 'unknown')}")
+                        full_answer = f"Error: {event.get('message', 'unknown')}"
 
             placeholder.markdown(full_answer if full_answer else "_No response received._")
 

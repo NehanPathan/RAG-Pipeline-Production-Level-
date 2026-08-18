@@ -22,6 +22,21 @@ os.environ["LANGFUSE_SECRET_KEY"] = ""
 os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = ""
 os.environ["OTEL_SDK_DISABLED"] = "true"
 
+# A placeholder credential, for the opposite reason to the blanking above.
+#
+# `Settings.openai_api_key` defaults to "", so the LLM gateway passes
+# `api_key=None` and langchain_openai falls back to reading OPENAI_API_KEY
+# itself -- raising at *construction* time when it is unset. Any test that
+# builds a real pipeline (tests/unit/api/test_dependencies.py) therefore
+# passed only on a machine that happened to have a live key exported, and
+# failed on a clean CI runner with "No usable LLM provider for role 'small'".
+#
+# The value is deliberately not a real key: nothing here calls the API, so a
+# syntactically-valid placeholder is all the constructor needs, and a test
+# that did start making network calls would fail loudly rather than quietly
+# spending someone's credit.
+os.environ["OPENAI_API_KEY"] = "sk-test-not-a-real-key"
+
 from pathlib import Path
 
 import pytest

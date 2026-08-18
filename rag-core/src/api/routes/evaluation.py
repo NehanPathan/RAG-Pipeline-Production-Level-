@@ -11,7 +11,8 @@ from src.config import get_settings
 from src.evaluation.offline.dataset import EvalDataset, EvalSample, list_datasets, load_dataset
 from src.evaluation.offline.repository import get_run, list_runs
 from src.evaluation.offline.runner import run_evaluation
-from src.governance.audit import AuditAction, AuditOutcome, record as audit_record
+from src.governance.audit import AuditAction, AuditOutcome
+from src.governance.audit import record as audit_record
 from src.governance.policy import get_policy
 from src.governance.rbac import Principal, Role, require_role
 from src.infrastructure.database.postgres.connection import get_session_factory
@@ -75,7 +76,7 @@ async def start_evaluation_run(
             raise HTTPException(
                 status_code=http_status.HTTP_404_NOT_FOUND,
                 detail=str(exc),
-            )
+            ) from None
 
     if not dataset.samples:
         raise HTTPException(

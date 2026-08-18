@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+
 from src.evaluation.offline.metrics import _parse_score
 
 

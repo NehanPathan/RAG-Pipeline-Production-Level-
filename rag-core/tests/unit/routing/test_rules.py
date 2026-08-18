@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+
 from src.routing.routes import Route, RouteSource
 from src.routing.rules import apply_rules, mentions_documents, suggests_web_search
 

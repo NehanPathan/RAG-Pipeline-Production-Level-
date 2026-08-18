@@ -1,11 +1,11 @@
 import uuid
+from pathlib import Path
 
 import pytest
 
 from src.domain.entities.document import ChunkType
 from src.ingestion.chunkers.parent_child_chunker import ChunkingConfig, ParentChildChunker
 from src.ingestion.loaders.base import RawDocument, TableBlock, TextBlock
-from pathlib import Path
 
 
 @pytest.fixture

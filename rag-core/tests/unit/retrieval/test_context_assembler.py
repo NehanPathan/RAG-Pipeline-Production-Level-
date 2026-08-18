@@ -2,8 +2,8 @@ import uuid
 
 from src.domain.entities.conversation import Citation
 from src.domain.entities.document import DocumentChunk
-from src.domain.value_objects.retrieval_candidate import FusedChunk, RerankedChunk
 from src.domain.value_objects.context_bundle import CompressedChunk
+from src.domain.value_objects.retrieval_candidate import FusedChunk, RerankedChunk
 from src.retrieval.answer.context_assembler import ContextAssembler
 
 

@@ -7,10 +7,11 @@ measure / manage, not in terms of which route returns which JSON.
 
 import os
 
-from src.ui import http as httpx
-from src.ui.auth import require_auth
 import pandas as pd
 import streamlit as st
+
+from src.ui import http as httpx
+from src.ui.auth import require_auth
 
 st.set_page_config(page_title="Governance", layout="wide")
 
@@ -112,7 +113,7 @@ with tab_status:
         st.subheader("Kill switches")
         flags = status["flags"]
         cols = st.columns(len(flags))
-        for col, (name, enabled) in zip(cols, flags.items()):
+        for col, (name, enabled) in zip(cols, flags.items(), strict=False):
             col.metric(name.replace("_enabled", ""), "ON" if enabled else "OFF")
 
 # ---------------------------------------------------------------- Govern

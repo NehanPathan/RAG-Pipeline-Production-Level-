@@ -1,13 +1,31 @@
 import asyncio
+import os
 import uuid
-from unittest.mock import AsyncMock, MagicMock
+
+# A placeholder credential, set at conftest import -- before anything builds a
+# `Settings` -- so the suite does not depend on the ambient environment.
+#
+# `Settings.openai_api_key` defaults to "", so the LLM gateway passes
+# `api_key=None` and the OpenAI client falls back to reading OPENAI_API_KEY
+# itself, raising at *construction* when it is unset. Any test that builds a
+# real pipeline (tests/unit/api/test_dependencies.py) therefore passed only on
+# a machine that happened to have a live key exported, and failed on a clean
+# CI runner with "No usable LLM provider for role 'small'".
+#
+# The value is deliberately not a real key: nothing here calls the API, so a
+# syntactically-valid placeholder is all the constructor needs, and a test
+# that did start making network calls would fail loudly rather than quietly
+# spending someone's credit.
+os.environ["OPENAI_API_KEY"] = "sk-test-not-a-real-key"
+
+from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
 from src.domain.entities.document import Document, DocumentStatus
 from src.ingestion.chunkers.parent_child_chunker import ChunkingConfig, ParentChildChunker
-from src.ingestion.loaders.base import RawDocument, TextBlock, TableBlock
-from pathlib import Path
+from src.ingestion.loaders.base import RawDocument, TableBlock, TextBlock
 
 
 @pytest.fixture(scope="session")

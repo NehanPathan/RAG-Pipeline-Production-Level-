@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import FrozenInstanceError
 
 import pytest
+
 from src.governance.runtime_flags import DEFAULT_FLAGS, RuntimeFlags, reset_flags_cache
 
 

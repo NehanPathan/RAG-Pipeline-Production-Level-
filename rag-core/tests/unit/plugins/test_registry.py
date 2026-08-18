@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+
 from src.governance import feature_flags
 from src.plugins import PluginNotFoundError, PluginRegistry
 from src.plugins.registry import PluginDisabledError

@@ -1,9 +1,7 @@
 import uuid
 from datetime import datetime
 
-import pytest
-
-from src.domain.entities.document import Document, DocumentStatus
+from src.domain.entities.document import DocumentStatus
 
 
 def test_document_initial_status_is_pending(sample_document):

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import uuid
-
 from src.config import get_settings
 from src.evaluation.online.feedback import FeedbackService
 from src.evaluation.online.sampler import OnlineEvaluator

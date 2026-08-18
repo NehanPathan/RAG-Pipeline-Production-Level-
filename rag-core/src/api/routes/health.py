@@ -46,8 +46,9 @@ async def health_check() -> HealthCheck:
 
     # Qdrant
     try:
-        from src.config import get_settings
         from qdrant_client import AsyncQdrantClient
+
+        from src.config import get_settings
         settings = get_settings()
         qclient = AsyncQdrantClient(url=settings.qdrant_url)
         await qclient.get_collections()

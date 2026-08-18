@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 
 from openai import AsyncOpenAI
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -56,7 +55,7 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         # Embed uncached texts in batches
         if uncached_texts:
             embeddings = await self._embed_batch(uncached_texts)
-            for idx, (list_idx, embedding) in enumerate(zip(uncached_indices, embeddings)):
+            for list_idx, embedding in zip(uncached_indices, embeddings, strict=True):
                 results[list_idx] = embedding
                 await self._set_cached(texts[list_idx], embedding)
 

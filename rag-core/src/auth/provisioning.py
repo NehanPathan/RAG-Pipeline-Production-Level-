@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 
@@ -53,7 +53,7 @@ async def provision_user(identity: FirebaseIdentity) -> tuple[uuid.UUID, str, bo
         ).scalar_one_or_none()
 
         if existing is not None:
-            existing.last_login_at = datetime.now(timezone.utc)
+            existing.last_login_at = datetime.now(UTC)
             # Keep profile fields fresh, never the role.
             existing.firebase_uid = existing.firebase_uid or identity.uid
             existing.email_verified = identity.email_verified
@@ -70,7 +70,7 @@ async def provision_user(identity: FirebaseIdentity) -> tuple[uuid.UUID, str, bo
             email_verified=identity.email_verified,
             role=settings.firebase_default_role,
             is_active=True,
-            last_login_at=datetime.now(timezone.utc),
+            last_login_at=datetime.now(UTC),
         )
         session.add(user)
         await session.commit()

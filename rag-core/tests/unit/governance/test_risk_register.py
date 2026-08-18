@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+
 from src.governance.risk_register import Control, Risk, RiskRegister, load_risk_register
 
 REPO_ROOT = Path(__file__).resolve().parents[3]

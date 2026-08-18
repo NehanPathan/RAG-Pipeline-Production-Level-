@@ -7,7 +7,7 @@ from src.ingestion.loaders.unstructured_loader import UnstructuredLoader
 
 def _fake_element(text: str, category: str, page_number: int = 1, category_depth=None, section=None):
     class _FakeElement:
-        def __str__(self_inner):
+        def __str__(self):
             return text
 
     element = _FakeElement()

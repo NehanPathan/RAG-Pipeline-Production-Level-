@@ -640,7 +640,7 @@ risks:
         description: >-
           Switching provider is a config change (`LLM_FALLBACK_PROVIDERS`),
           not a code change, because no call site holds a provider directly.
-        implemented_in:/
+        implemented_in:
           - src/llm/registry.py
           - src/config.py
       - id: C-MAN-09
